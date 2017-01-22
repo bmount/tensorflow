@@ -331,6 +331,7 @@ TEST(ArrayOpsTest, PadD_ShapeFn) {
     INFER_OK(op, "[100,200,300];[3,2]", "[111,222,333]");
     INFER_OK(op, "[100,?,300];[3,2]", "[111,?,333]");
     INFER_OK(op, "?;[3,2]", "[?,?,?]");
+    INFER_OK(op, "?;?", "[?,?,?]");
   }
 }
 
@@ -364,6 +365,18 @@ TEST(ArrayOpsTest, MirrorPadGrad_ShapeFn) {
 
   INFER_OK(op, "[111,222,333];[3,2]", "[100,200,300]");
   INFER_OK(op, "[111,?,333];[3,2]", "[100,?,300]");
+}
+
+TEST(ArrayOpsTest, BroadcastArgs_ShapeFn) {
+  ShapeInferenceTestOp op("BroadcastArgs");
+  INFER_OK(op, "?;?", "[?]");
+  INFER_OK(op, "[123];[1]", "[123]");
+  INFER_OK(op, "[1];[123]", "[123]");
+  INFER_OK(op, "[123];[121]", "[123]");
+
+  // Rank checks
+  INFER_ERROR("Shape must be rank 1 but is rank 0", op, "[];?");
+  INFER_ERROR("Shape must be rank 1 but is rank 0", op, "?;[]");
 }
 
 TEST(ArrayOpsTest, BroadcastGradientArgs_ShapeFn) {

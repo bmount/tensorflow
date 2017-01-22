@@ -160,6 +160,12 @@ class DType(object):
                                                    np.floating)
 
   @property
+  def is_real(self):
+    """Return whether this is a representation of a real floating point type.
+    Can be quantized."""
+    return self.base_dtype in (float16, float32, float64, bfloat16)
+
+  @property
   def is_complex(self):
     """Returns whether this is a complex floating point type."""
     return self.base_dtype in (complex64, complex128)
@@ -297,6 +303,8 @@ class DType(object):
 
   @property
   def size(self):
+    if self._type_enum == types_pb2.DT_RESOURCE:
+      return 1
     return np.dtype(self.as_numpy_dtype).itemsize
 
 # Define data type range of numpy dtype

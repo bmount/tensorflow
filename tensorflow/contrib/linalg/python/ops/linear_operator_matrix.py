@@ -157,7 +157,7 @@ class LinearOperatorMatrix(linear_operator.LinearOperator):
   def _shape(self):
     return self._matrix.get_shape()
 
-  def _shape_dynamic(self):
+  def _shape_tensor(self):
     return array_ops.shape(self._matrix)
 
   def _apply(self, x, adjoint=False):
@@ -172,11 +172,7 @@ class LinearOperatorMatrix(linear_operator.LinearOperator):
     if self._is_spd:
       diag = array_ops.matrix_diag_part(self._chol)
       return 2 * math_ops.reduce_sum(math_ops.log(diag), reduction_indices=[-1])
-
-    if self.dtype.is_complex:
-      abs_det = math_ops.complex_abs(self.determinant())
-    else:
-      abs_det = math_ops.abs(self.determinant())
+    abs_det = math_ops.abs(self.determinant())
     return math_ops.log(abs_det)
 
   def _solve(self, rhs, adjoint=False):

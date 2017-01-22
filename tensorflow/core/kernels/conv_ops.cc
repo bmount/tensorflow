@@ -183,6 +183,8 @@ class LaunchXsmmConvOp<CPUDevice, float> {
                   int filter_cols, int pad_rows, int pad_cols, int out_rows,
                   int out_cols, int out_depth, int stride_rows, int stride_cols,
                   Tensor* output, TensorFormat data_format) {
+    auto num_threads =
+        ctx->device()->tensorflow_cpu_worker_threads()->num_threads;
     // See libxsmm_dnn.h for this struct definition.
     libxsmm_dnn_conv_desc desc;
     desc.N = batch;
@@ -194,14 +196,16 @@ class LaunchXsmmConvOp<CPUDevice, float> {
     desc.S = filter_cols;
     desc.u = stride_rows;
     desc.v = stride_cols;
-    desc.pad_h_in = pad_rows;  // ignored by libxsmm for now.
-    desc.pad_w_in = pad_cols;  // ignored by libxsmm for now.
+    desc.pad_h = pad_rows;
+    desc.pad_w = pad_cols;
+    desc.pad_h_in = pad_rows;  // libxsmm supports only physical padding for now
+    desc.pad_w_in = pad_cols;  // libxsmm supports only physical padding for now
     desc.pad_h_out = 0;
     desc.pad_w_out = 0;
-    desc.threads = 0;  // Unknown at this point, will be set later.
+    desc.threads = num_threads;
     desc.algo = LIBXSMM_DNN_CONV_ALGO_DIRECT;
     desc.buffer_format = LIBXSMM_DNN_CONV_FORMAT_NHWC;
-    desc.filter_format = LIBXSMM_DNN_CONV_FORMAT_RSCK;
+    desc.filter_format = LIBXSMM_DNN_CONV_FORMAT_LIBXSMM;
     desc.fuse_ops = LIBXSMM_DNN_CONV_FUSE_NONE;
     desc.options = LIBXSMM_DNN_CONV_OPTION_NONE;
     desc.datatype_in = LIBXSMM_DNN_DATATYPE_F32;
@@ -215,9 +219,9 @@ class LaunchXsmmConvOp<CPUDevice, float> {
     auto filter_ptr = filter.template flat<float>().data();
     auto output_ptr = output->template flat<float>().data();
 
-    functor::XsmmConv2D<CPUDevice, float>()(ctx, desc, input_ptr, filter_ptr,
-                                            output_ptr);
-    return true;
+    bool success = functor::XsmmFwdConv2D<CPUDevice, float>()(
+        ctx, desc, input_ptr, filter_ptr, output_ptr);
+    return success;
   }
 };
 #endif

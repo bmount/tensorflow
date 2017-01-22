@@ -17,14 +17,21 @@ from __future__ import division
 from __future__ import print_function
 
 import numpy as np
-import tensorflow as tf
+from tensorflow.contrib import linalg as linalg_lib
+from tensorflow.python.framework import constant_op
+from tensorflow.python.framework import dtypes
+from tensorflow.python.framework import ops
+from tensorflow.python.framework import tensor_shape
+from tensorflow.python.ops import array_ops
+from tensorflow.python.ops import math_ops
+from tensorflow.python.platform import test
 
-linalg = tf.contrib.linalg
+linalg = linalg_lib
 rng = np.random.RandomState(123)
 
 
 class LinearOperatorShape(linalg.LinearOperator):
-  """LinearOperator that implements the methods ._shape and _shape_dynamic."""
+  """LinearOperator that implements the methods ._shape and _shape_tensor."""
 
   def __init__(self,
                shape,
@@ -33,17 +40,17 @@ class LinearOperatorShape(linalg.LinearOperator):
                is_positive_definite=None):
     self._stored_shape = shape
     super(LinearOperatorShape, self).__init__(
-        dtype=tf.float32,
+        dtype=dtypes.float32,
         graph_parents=None,
         is_non_singular=is_non_singular,
         is_self_adjoint=is_self_adjoint,
         is_positive_definite=is_positive_definite,)
 
   def _shape(self):
-    return tf.TensorShape(self._stored_shape)
+    return tensor_shape.TensorShape(self._stored_shape)
 
-  def _shape_dynamic(self):
-    return tf.constant(self._stored_shape, dtype=tf.int32)
+  def _shape_tensor(self):
+    return constant_op.constant(self._stored_shape, dtype=dtypes.int32)
 
 
 class LinearOperatorApplyOnly(linalg.LinearOperator):
@@ -54,7 +61,7 @@ class LinearOperatorApplyOnly(linalg.LinearOperator):
                is_non_singular=None,
                is_self_adjoint=None,
                is_positive_definite=None):
-    self._matrix = tf.convert_to_tensor(matrix, name="matrix")
+    self._matrix = ops.convert_to_tensor(matrix, name="matrix")
     super(LinearOperatorApplyOnly, self).__init__(
         dtype=matrix.dtype,
         is_non_singular=is_non_singular,
@@ -64,14 +71,14 @@ class LinearOperatorApplyOnly(linalg.LinearOperator):
   def _shape(self):
     return self._matrix.get_shape()
 
-  def _shape_dynamic(self):
-    return tf.shape(self._matrix)
+  def _shape_tensor(self):
+    return array_ops.shape(self._matrix)
 
   def _apply(self, x, adjoint=False):
-    return tf.matmul(self._matrix, x, adjoint_a=adjoint)
+    return math_ops.matmul(self._matrix, x, adjoint_a=adjoint)
 
 
-class LinearOperatorTest(tf.test.TestCase):
+class LinearOperatorTest(test.TestCase):
 
   def test_all_shape_properties_defined_by_the_one_property_shape(self):
 
@@ -89,11 +96,11 @@ class LinearOperatorTest(tf.test.TestCase):
       shape = (1, 2, 3, 4)
       operator = LinearOperatorShape(shape)
 
-      self.assertAllEqual(shape, operator.shape_dynamic().eval())
-      self.assertAllEqual(4, operator.tensor_rank_dynamic().eval())
-      self.assertAllEqual((1, 2), operator.batch_shape_dynamic().eval())
-      self.assertAllEqual(4, operator.domain_dimension_dynamic().eval())
-      self.assertAllEqual(3, operator.range_dimension_dynamic().eval())
+      self.assertAllEqual(shape, operator.shape_tensor().eval())
+      self.assertAllEqual(4, operator.tensor_rank_tensor().eval())
+      self.assertAllEqual((1, 2), operator.batch_shape_tensor().eval())
+      self.assertAllEqual(4, operator.domain_dimension_tensor().eval())
+      self.assertAllEqual(3, operator.range_dimension_tensor().eval())
 
   def test_is_x_properties(self):
     operator = LinearOperatorShape(
@@ -113,9 +120,9 @@ class LinearOperatorTest(tf.test.TestCase):
       self.assertAllEqual((2, 3, 4), operator_dense.get_shape())
       self.assertAllClose(matrix, operator_dense.eval())
 
-  def test_generic_to_dense_method_non_square_matrix_dynamic(self):
+  def test_generic_to_dense_method_non_square_matrix_tensor(self):
     matrix = rng.randn(2, 3, 4)
-    matrix_ph = tf.placeholder(tf.float64)
+    matrix_ph = array_ops.placeholder(dtypes.float64)
     operator = LinearOperatorApplyOnly(matrix_ph)
     with self.test_session():
       operator_dense = operator.to_dense()
@@ -124,4 +131,4 @@ class LinearOperatorTest(tf.test.TestCase):
 
 
 if __name__ == "__main__":
-  tf.test.main()
+  test.main()

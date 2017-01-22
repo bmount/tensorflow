@@ -18,17 +18,27 @@ limitations under the License.
 #ifdef USE_HEXAGON_LIBS
 #include "tensorflow/core/platform/hexagon/soc_interface.h"
 #include "tensorflow/core/platform/profile_utils/cpu_utils.h"
-#include "tensorflow/core/platform/types.h"
 #endif
 
 namespace tensorflow {
+
+const bool SHOW_DBG_IN_SOC = false;
+const bool DBG_USE_DUMMY_INPUT = false;
+const bool DBG_USE_SAMPLE_INPUT = false;
+const int64 FLAG_ENABLE_PANDA_BINARY_INPUT = 0x01;
 
 #ifdef USE_HEXAGON_LIBS
 int HexagonControlWrapper::GetVersion() {
   return soc_interface_GetSocControllerVersion();
 }
 
-bool HexagonControlWrapper::Init() { return soc_interface_Init(); }
+bool HexagonControlWrapper::Init() {
+  soc_interface_SetLogLevel(SHOW_DBG_IN_SOC ? -1 /* debug */ : 0 /* info */);
+  if (DBG_USE_SAMPLE_INPUT) {
+    soc_interface_SetDebugFlag(FLAG_ENABLE_PANDA_BINARY_INPUT);
+  }
+  return soc_interface_Init();
+}
 
 bool HexagonControlWrapper::Finalize() { return soc_interface_Finalize(); }
 bool HexagonControlWrapper::SetupGraph(
@@ -131,18 +141,15 @@ bool HexagonControlWrapper::SetupGraph(
       output_count = std::get<1>(output_ptr_and_count);
       CHECK(output_count > 0);
     }
-
-    // TODO(satok): Do not use string. Use enum instead.
-    const string padding = params.padding;
     int padding_id = -1;
-    if (padding == "NN_PAD_NA") {
+    if (params.padding == 0) {
       padding_id = 0;
-    } else if (padding == "NN_PAD_SAME") {
+    } else if (params.padding == Padding::SAME) {
       padding_id = 1;
-    } else if (padding == "NN_PAD_VALID") {
+    } else if (params.padding == Padding::VALID) {
       padding_id = 2;
     } else {
-      CHECK(false) << "Unsupported padding " << padding;
+      CHECK(false);
     }
     soc_interface_AppendNode(params.name.c_str(), node_id + NODE_ID_OFFSET,
                              op_id, padding_id, input_ptr, input_count,
@@ -155,7 +162,7 @@ bool HexagonControlWrapper::SetupGraph(
   return soc_interface_ConstructGraph();
 
   // Keep following comment to use dummy graph construction
-  // return soc_interface_SetupGraphDummy(3 /* inception version */);
+  // return soc_interface_setupDummyGraph(3 /* inception version */);
 }
 
 bool HexagonControlWrapper::ExecuteGraph() {
@@ -169,16 +176,24 @@ bool HexagonControlWrapper::TeardownGraph() {
 
 bool HexagonControlWrapper::FillInputNode(const string node_name,
                                           const ByteArray bytes) {
-  // TODO(satok): Use arguments instead of dummy input
+  uint64 byte_size;
   const int x = 1;
   const int y = 299;
   const int z = 299;
   const int d = 3;
-  const int array_length = x * y * z * d;
-  const int byte_size = array_length * sizeof(float);
-  dummy_input_float_.resize(array_length);
+  if (DBG_USE_DUMMY_INPUT) {
+    const int array_length = x * y * z * d;
+    byte_size = array_length * sizeof(float);
+    dummy_input_float_.resize(array_length);
+    std::memset(dummy_input_float_.data(), 0, byte_size);
+  } else {
+    CHECK(std::get<2>(bytes) == DT_FLOAT);
+    byte_size = std::get<1>(bytes);
+    dummy_input_float_.resize(byte_size / sizeof(float));
+    std::memcpy(dummy_input_float_.data(), std::get<0>(bytes), byte_size);
+  }
   return soc_interface_FillInputNodeFloat(
-      1, 299, 299, 3, reinterpret_cast<uint8 *>(dummy_input_float_.data()),
+      x, y, z, d, reinterpret_cast<uint8*>(dummy_input_float_.data()),
       byte_size);
 }
 
@@ -188,6 +203,7 @@ bool HexagonControlWrapper::ReadOutputNode(
   ByteArray output;
   soc_interface_ReadOutputNodeFloat(node_name.c_str(), &std::get<0>(output),
                                     &std::get<1>(output));
+  // TODO: Accept all results
   std::get<2>(output) = DT_FLOAT;
   outputs->emplace_back(output);
   return true;
