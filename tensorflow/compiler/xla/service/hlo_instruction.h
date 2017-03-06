@@ -135,6 +135,11 @@ class HloInstruction {
   static std::unique_ptr<HloInstruction> CreateInfeed(const Shape& shape,
                                                       const string& config);
 
+  // Creates an outfeed instruction, which outputs data.
+  static std::unique_ptr<HloInstruction> CreateOutfeed(
+      const Shape& shape, HloInstruction* operand,
+      tensorflow::StringPiece outfeed_config);
+
   // Creates a send instruction with the given channel id, which sends the
   // operand data to a unique receive instruction in another computation that
   // has the same channel id.
@@ -320,7 +325,6 @@ class HloInstruction {
   // Adds the given instruction to the set of control successors.
   void AddControlSuccessor(HloInstruction* instruction);
 
-  // Returns the set of control successors of this instruction.
   // Returns true if "other" performs the same computation as this instruction.
   // Layout of the instructions' output array is not considered.
   bool Identical(
@@ -359,17 +363,31 @@ class HloInstruction {
   // complete.
   Status Accept(DfsHloVisitor* visitor, bool call_finish_visit = true);
 
+  // Same as Accept() above, but the order of operand and control predecessor
+  // visitation is determined by the given operand order; if compare(A, B) ==
+  // true, A is visited before B.
+  using CompareFunction =
+      std::function<bool(const HloInstruction*, const HloInstruction*)>;
+  Status AcceptWithOperandOrder(DfsHloVisitor* visitor,
+                                const CompareFunction& operand_order,
+                                bool call_finish_visit = true);
+
   // Performs a postorder DFS visit using this node as the root. Calls the given
   // visitor function at each instruction.
-  Status Accept(FunctionVisitor::VisitorFunction visitor_func);
+  Status Accept(const FunctionVisitor::VisitorFunction& visitor_func);
 
   // Visits all instructions rooted at this instruction using the given visitor
-  // in the given order. 'order' must contain exactly the set of instructions
+  // in the given order. 'order' must contain at least the set of instructions
   // rooted at this node (ie, those accessible from a DFS traversal from this
-  // instruction). 'order' must also be a valid topological sort of these
-  // instructions (defs appear before uses).
+  // instruction). Instructions contained in 'order' which are not in the set of
+  // instructions rooted at this node are ignored. 'order' must also be a valid
+  // topological sort of these instructions (defs appear before uses) though
+  // need not be a DFS post-order.
   Status AcceptOrdered(DfsHloVisitor* visitor,
                        const std::vector<const HloInstruction*>& order);
+
+  // Visit this instruction and only this instruction with the given visitor.
+  Status Visit(DfsHloVisitor* visitor);
 
   // Returns the literal associated with this instruction.
   //
@@ -416,6 +434,14 @@ class HloInstruction {
   // Precondition: opcode() == HloOpcode::kCustomCall
   const string& custom_call_target() const;
 
+  // Returns the config for the Outfeed instruction.
+  // Precondition: opcode() == HloOpcode::kOutfeed
+  const string& outfeed_config() const;
+
+  // Returns the shape for the Outfeed instruction.
+  // Precondition: opcode() == HloOpcode::kOutfeed
+  const Shape& outfeed_shape() const;
+
   // Gets/sets the while_condition or while_body HloComputation for While. The
   // setters should only be called by HloModule or HloComputation methods.
   //
@@ -443,6 +469,13 @@ class HloInstruction {
 
   // As ToString, but returns a shorter string.
   string ToShortString() const;
+
+  // Returns a category for the HLO. This could be something like "convolution"
+  // or "elementwise".
+  string ToCategory() const;
+
+  // Returns the string concatenation of parent name and this instructions name.
+  string FullyQualifiedName() const;
 
   // Returns a logging instruction, if the output of this instruction is logged.
   //
@@ -502,6 +535,11 @@ class HloInstruction {
   //
   // Precondition: opcode() == HloOpcode::kFusion
   HloInstruction* fused_parameter(int64 parameter_number) const;
+
+  // Returns the vector of fused parameters inside this fusion instruction.
+  //
+  // Precondition: opcode() == HloOpcode::kFusion
+  const std::vector<HloInstruction*>& fused_parameters() const;
 
   FusionKind fusion_kind() const {
     CHECK_EQ(HloOpcode::kFusion, opcode_);
@@ -691,10 +729,8 @@ class HloInstruction {
 
   // Inner DFS traversal function -- this function being called (rather than
   // Accept above) allows us to distinguish the root of the traversal.
-  Status AcceptInternal(DfsHloVisitor* visitor);
-
-  // Inner DFS traversal function called when visiting this HloInstruction.
-  Status AcceptInternalVisit(DfsHloVisitor* visitor);
+  Status AcceptInternal(DfsHloVisitor* visitor,
+                        const CompareFunction* operand_order);
 
   // CHECKs various invariants of a fusion instruction.
   void CheckFusionInstruction() const;
@@ -705,6 +741,9 @@ class HloInstruction {
 
   // Returns how this instruction uses elements of its `i`th operand.
   UseKind OperandElementUse(int64 i) const;
+
+  // Shape of outfeed request.
+  Shape outfeed_shape_;
 
   // Result shape of this instruction.
   Shape shape_;
@@ -778,6 +817,9 @@ class HloInstruction {
   // kSelectAndScatter.
   HloComputation* select_ = nullptr;
   HloComputation* scatter_ = nullptr;
+
+  // Outfeed configuration information, only present for kOutfeed.
+  string outfeed_config_;
 
   // Instruction operands.
   std::vector<HloInstruction*> operands_;

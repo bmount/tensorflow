@@ -19,6 +19,7 @@ limitations under the License.
 #include <utility>
 #include <vector>
 
+#include "tensorflow/compiler/xla/legacy_flags/service_flags.h"
 #include "tensorflow/compiler/xla/ptr_util.h"
 #include "tensorflow/compiler/xla/service/backend.h"
 #include "tensorflow/compiler/xla/service/computation_layout.h"
@@ -222,7 +223,7 @@ LocalService::CompileAheadOfTime(
     TF_ASSIGN_OR_RETURN(std::unique_ptr<HloModule> hlo_module,
                         computation_tracker_.BuildHloModule(
                             versioned_handle,
-                            /*include_unused_parameters=*/true));
+                            /*include_unreachable_instructions=*/true));
     hlo_modules.push_back(std::move(hlo_module));
 
     TF_ASSIGN_OR_RETURN(
@@ -425,8 +426,8 @@ StatusOr<std::unique_ptr<ShapedBuffer>> LocalService::ExecuteLocallyInternal(
   run_options.set_intra_op_thread_pool(
       execute_backend_->eigen_intra_op_thread_pool_device());
 
-  // "acquired_stream" owns the stream used for execution if no stream is given.
-  std::unique_ptr<se::Stream> acquired_stream;
+  // "stream" owns the stream used for execution if no stream is given.
+  Backend::StreamPtr stream;
   if (options.stream()) {
     run_options.set_stream(options.stream());
   } else {
@@ -438,39 +439,37 @@ StatusOr<std::unique_ptr<ShapedBuffer>> LocalService::ExecuteLocallyInternal(
     } else {
       stream_executor = execute_backend_->default_stream_executor();
     }
-    TF_ASSIGN_OR_RETURN(acquired_stream,
-                        execute_backend_->AcquireStream(stream_executor));
-    run_options.set_stream(acquired_stream.get());
+    TF_ASSIGN_OR_RETURN(stream,
+                        execute_backend_->BorrowStream(stream_executor));
+    run_options.set_stream(stream.get());
   }
-  auto stream_releaser =
-      ::tensorflow::gtl::MakeCleanup([this, &acquired_stream]() {
-        if (acquired_stream != nullptr) {
-          execute_backend_->ReleaseStream(std::move(acquired_stream));
-        }
-      });
+
+  ServiceExecutableRunOptions service_run_options(
+      run_options, mutable_backend()->StreamBorrower());
 
   ExecutionProfile* profile = options.execution_profile();
   TF_ASSIGN_OR_RETURN(
       std::shared_ptr<Executable> executable,
       BuildAndCacheExecutable(versioned_handle, std::move(module_config),
                               argument_buffers, execute_backend_.get(),
-                              run_options.stream()->parent(), profile));
+                              service_run_options.stream()->parent(), profile));
 
   if (preallocated_result_buffer == nullptr) {
     return Service::ExecuteOnStreamWrapper<
         StatusOr<std::unique_ptr<ShapedBuffer>>>(
-        executable.get(), &run_options, profile,
+        executable.get(), &service_run_options, profile,
         [&arguments](Executable* executable,
-                     const ExecutableRunOptions* run_options,
+                     const ServiceExecutableRunOptions* run_options,
                      HloExecutionProfile* hlo_execution_profile) {
           return executable->ExecuteOnStream(run_options, arguments,
                                              hlo_execution_profile);
         });
   } else {
     TF_RETURN_IF_ERROR(Service::ExecuteOnStreamWrapper<tensorflow::Status>(
-        executable.get(), &run_options, profile,
+        executable.get(), &service_run_options, profile,
         [&arguments, preallocated_result_buffer](
-            Executable* executable, const ExecutableRunOptions* run_options,
+            Executable* executable,
+            const ServiceExecutableRunOptions* run_options,
             HloExecutionProfile* hlo_execution_profile) {
           return executable->ExecuteOnStream(run_options, arguments,
                                              preallocated_result_buffer,
@@ -519,6 +518,10 @@ StatusOr<std::unique_ptr<Executable>> LocalService::CompileExecutable(
   auto module_config = MakeUnique<HloModuleConfig>(*program_shape);
   module_config->set_has_hybrid_result(has_hybrid_result);
   module_config->set_replica_count(execute_backend_->Replicas().size());
+  legacy_flags::ServiceFlags* flags = legacy_flags::GetServiceFlags();
+  if (flags->xla_hlo_profile) {
+    module_config->enable_hlo_profiling(true);
+  }
   auto* computation_layout = module_config->mutable_entry_computation_layout();
   for (int i = 0; i < argument_layouts.size(); ++i) {
     const Shape& shape = *argument_layouts[i];

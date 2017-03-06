@@ -590,7 +590,13 @@ Status ReductionShape(InferenceContext* c) {
   ShapeHandle input = c->input(0);
 
   ShapeHandle indices;
-  TF_RETURN_IF_ERROR(c->WithRankAtMost(c->input(1), 1, &indices));
+  // Older versions of TensorFlow accidentally allowed higher rank tensors like
+  // [[1,2]] or [[1],[2]] to represent axis=[1,2].
+  if (c->graph_def_version() < 21) {
+    indices = c->input(1);
+  } else {
+    TF_RETURN_IF_ERROR(c->WithRankAtMost(c->input(1), 1, &indices));
+  }
 
   bool keep_dims;
   TF_RETURN_IF_ERROR(c->GetAttr("keep_dims", &keep_dims));
@@ -666,7 +672,7 @@ Status ConcatShapeHelper(InferenceContext* c, int start_value_index,
     }
     if (rank == 0) {
       return errors::InvalidArgument(
-          "Can't concatenate scalars (use tf.pack instead)");
+          "Can't concatenate scalars (use tf.stack instead)");
     }
     // Build result of <rank> different unknown dims.
     std::vector<DimensionHandle> dims;

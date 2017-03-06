@@ -22,7 +22,6 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import csv
 import imghdr
 import mimetypes
 import os
@@ -31,9 +30,7 @@ import threading
 import time
 
 import six
-from six import StringIO
 from six.moves import urllib
-from six.moves import xrange  # pylint: disable=redefined-builtin
 from six.moves.urllib import parse as urlparse
 from werkzeug import wrappers
 
@@ -43,7 +40,18 @@ from tensorflow.python.summary import event_accumulator
 from tensorflow.python.summary import event_multiplexer
 from tensorflow.tensorboard.backend import process_graph
 from tensorflow.tensorboard.lib.python import http_util
+from tensorflow.tensorboard.plugins.debugger import debugger_plugin
+from tensorflow.tensorboard.plugins.projector import projector_plugin
 
+
+DEFAULT_SIZE_GUIDANCE = {
+    event_accumulator.COMPRESSED_HISTOGRAMS: 500,
+    event_accumulator.IMAGES: 10,
+    event_accumulator.AUDIO: 10,
+    event_accumulator.SCALARS: 1000,
+    event_accumulator.HEALTH_PILLS: 100,
+    event_accumulator.HISTOGRAMS: 50,
+}
 
 DATA_PREFIX = '/data'
 LOGDIR_ROUTE = '/logdir'
@@ -69,15 +77,6 @@ _IMGHDR_TO_MIMETYPE = {
 _DEFAULT_IMAGE_MIMETYPE = 'application/octet-stream'
 
 
-TENSORBOARD_SIZE_GUIDANCE = {
-    event_accumulator.COMPRESSED_HISTOGRAMS: 500,
-    event_accumulator.IMAGES: 4,
-    event_accumulator.AUDIO: 4,
-    event_accumulator.SCALARS: 1000,
-    event_accumulator.HISTOGRAMS: 50,
-}
-
-
 def _content_type_for_image(encoded_image_string):
   image_type = imghdr.what(None, encoded_image_string)
   return _IMGHDR_TO_MIMETYPE.get(image_type, _DEFAULT_IMAGE_MIMETYPE)
@@ -90,7 +89,22 @@ class _OutputFormat(object):
   compressed histograms support CSV).
   """
   JSON = 'json'
-  CSV = 'csv'
+
+
+def standard_tensorboard_wsgi(logdir, purge_orphaned_data, reload_interval):
+  """Construct a TensorBoardWSGIApp with standard plugins and multiplexer."""
+  multiplexer = event_multiplexer.EventMultiplexer(
+      size_guidance=DEFAULT_SIZE_GUIDANCE,
+      purge_orphaned_data=purge_orphaned_data)
+
+  plugins = {
+      debugger_plugin.PLUGIN_PREFIX_ROUTE:
+          debugger_plugin.DebuggerPlugin(multiplexer),
+      projector_plugin.PLUGIN_PREFIX_ROUTE:
+          projector_plugin.ProjectorPlugin(),
+  }
+
+  return TensorBoardWSGIApp(logdir, plugins, multiplexer, reload_interval)
 
 
 class TensorBoardWSGIApp(object):
@@ -103,46 +117,31 @@ class TensorBoardWSGIApp(object):
   #                      responses using send_header.
   protocol_version = 'HTTP/1.1'
 
-  def __init__(self,
-               logdir,
-               plugins,
-               size_guidance=None,
-               purge_orphaned_data=True,
-               reload_interval=60):
+  def __init__(self, logdir, plugins, multiplexer, reload_interval):
     """Constructs the TensorBoard application.
 
     Args:
       logdir: the logdir spec that describes where data will be loaded.
         may be a directory, or comma,separated list of directories, or colons
         can be used to provide named directories
-      plugins: Map from plugin name to plugin application.
-      size_guidance: Controls how much data of every kind is loaded into memory.
-      purge_orphaned_data: "orphaned" data may be left behind due to a
-        TF restart or out-of-order execution. If true, purge it when detected.
+      plugins: Map from plugin name to plugin application
+      multiplexer: The EventMultiplexer with TensorBoard data to serve
       reload_interval: How often (in seconds) to reload the Multiplexer
 
     Returns:
       A WSGI application that implements the TensorBoard backend.
     """
-    if size_guidance is None:
-      size_guidance = TENSORBOARD_SIZE_GUIDANCE
-    self._registered_plugins = plugins
     self._logdir = logdir
-    self._size = size_guidance
-    self._purge = purge_orphaned_data
-    self._reload = reload_interval
-    self.initialize()
-
-  def initialize(self):
-    """Setup the TensorBoard application."""
-    path_to_run = parse_event_files_spec(self._logdir)
-    multiplexer = event_multiplexer.EventMultiplexer(
-        size_guidance=self._size, purge_orphaned_data=self._purge)
-    if self._reload:
-      start_reloading_multiplexer(multiplexer, path_to_run, self._reload)
-    else:
-      reload_multiplexer(multiplexer, path_to_run)
+    self._plugins = plugins
     self._multiplexer = multiplexer
+    self.tag = get_tensorboard_tag()
+
+    path_to_run = parse_event_files_spec(self._logdir)
+    if reload_interval:
+      start_reloading_multiplexer(self._multiplexer, path_to_run,
+                                  reload_interval)
+    else:
+      reload_multiplexer(self._multiplexer, path_to_run)
 
     self.data_applications = {
         DATA_PREFIX + LOGDIR_ROUTE:
@@ -174,9 +173,9 @@ class TensorBoardWSGIApp(object):
     # Serve the routes from the registered plugins using their name as the route
     # prefix. For example if plugin z has two routes /a and /b, they will be
     # served as /data/plugin/z/a and /data/plugin/z/b.
-    for name in self._registered_plugins:
+    for name in self._plugins:
       try:
-        plugin = self._registered_plugins[name]
+        plugin = self._plugins[name]
         plugin_apps = plugin.get_plugin_apps(self._multiplexer.RunPaths(),
                                              self._logdir)
       except Exception as e:  # pylint: disable=broad-except
@@ -267,14 +266,7 @@ class TensorBoardWSGIApp(object):
     run = request.args.get('run')
     values = self._multiplexer.Scalars(run, tag)
 
-    if request.args.get('format') == _OutputFormat.CSV:
-      string_io = StringIO()
-      writer = csv.writer(string_io)
-      writer.writerow(['Wall time', 'Step', 'Value'])
-      writer.writerows(values)
-      return http_util.Respond(request, string_io.getvalue(), 'text/csv')
-    else:
-      return http_util.Respond(request, values, 'application/json')
+    return http_util.Respond(request, values, 'application/json')
 
   @wrappers.Request.application
   def _serve_graph(self, request):
@@ -339,28 +331,7 @@ class TensorBoardWSGIApp(object):
     tag = request.args.get('tag')
     run = request.args.get('run')
     compressed_histograms = self._multiplexer.CompressedHistograms(run, tag)
-    if request.args.get('format') == _OutputFormat.CSV:
-      string_io = StringIO()
-      writer = csv.writer(string_io)
-
-      # Build the headers; we have two columns for timing and two columns for
-      # each compressed histogram bucket.
-      headers = ['Wall time', 'Step']
-      if compressed_histograms:
-        bucket_count = len(compressed_histograms[0].compressed_histogram_values)
-        for i in xrange(bucket_count):
-          headers += ['Edge %d basis points' % i, 'Edge %d value' % i]
-      writer.writerow(headers)
-
-      for compressed_histogram in compressed_histograms:
-        row = [compressed_histogram.wall_time, compressed_histogram.step]
-        for value in compressed_histogram.compressed_histogram_values:
-          row += [value.rank_in_bps, value.value]
-        writer.writerow(row)
-      return http_util.Respond(request, string_io.getvalue(), 'text/csv')
-    else:
-      return http_util.Respond(
-          request, compressed_histograms, 'application/json')
+    return http_util.Respond(request, compressed_histograms, 'application/json')
 
   @wrappers.Request.application
   def _serve_images(self, request):
@@ -547,7 +518,7 @@ class TensorBoardWSGIApp(object):
       try:
         contents = resource_loader.load_resource(path)
       except IOError:
-        logging.info('path %s not found, sending 404', path)
+        logging.warning('path %s not found, sending 404', path)
         return http_util.Respond(request, 'Not found', 'text/plain', code=404)
     mimetype, content_encoding = mimetypes.guess_type(path)
     mimetype = mimetype or 'application/octet-stream'
@@ -679,3 +650,9 @@ def start_reloading_multiplexer(multiplexer, path_to_run, load_interval):
   thread.daemon = True
   thread.start()
   return thread
+
+
+def get_tensorboard_tag():
+  """Read the TensorBoard TAG number, and return it or an empty string."""
+  tag = resource_loader.load_resource('tensorboard/TAG').strip()
+  return tag

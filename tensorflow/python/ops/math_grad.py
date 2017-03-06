@@ -188,41 +188,53 @@ def _SparseSegmentSqrtNGrad(op, grad):
                                               dim0), None, None)
 
 
-def _SegmentMinOrMaxGrad(op, grad):
-  """Gradient for SegmentMin and SegmentMax. Both share the same code."""
-  zeros = array_ops.zeros(
-      array_ops.shape(op.inputs[0]), dtype=op.inputs[0].dtype)
+def _SegmentMinOrMaxGrad(op, grad, is_sorted):
+  """Gradient for SegmentMin and (unsorted) SegmentMax. They share similar code."""
+  zeros = array_ops.zeros(array_ops.shape(op.inputs[0]),
+                          dtype=op.inputs[0].dtype)
 
   # Get the number of selected (minimum or maximum) elements in each segment.
   gathered_outputs = array_ops.gather(op.outputs[0], op.inputs[1])
   is_selected = math_ops.equal(op.inputs[0], gathered_outputs)
-  num_selected = math_ops.segment_sum(
-      math_ops.cast(is_selected, grad.dtype), op.inputs[1])
+  if is_sorted:
+    num_selected = math_ops.segment_sum(math_ops.cast(is_selected, grad.dtype),
+                                        op.inputs[1])
+  else:
+    num_selected = math_ops.unsorted_segment_sum(math_ops.cast(is_selected, grad.dtype),
+                                                 op.inputs[1], op.inputs[2])
 
   # Compute the gradient for each segment. The gradient for the ith segment is
   # divided evenly among the selected elements in that segment.
   weighted_grads = math_ops.div(grad, num_selected)
   gathered_grads = array_ops.gather(weighted_grads, op.inputs[1])
 
-  return array_ops.where(is_selected, gathered_grads, zeros), None
+  if is_sorted:
+    return array_ops.where(is_selected, gathered_grads, zeros), None
+  else:
+    return array_ops.where(is_selected, gathered_grads, zeros), None, None
 
 
 @ops.RegisterGradient("SegmentMin")
 def _SegmentMinGrad(op, grad):
   """Gradient for SegmentMin."""
-  return _SegmentMinOrMaxGrad(op, grad)
+  return _SegmentMinOrMaxGrad(op, grad, True)
 
 
 @ops.RegisterGradient("SegmentMax")
 def _SegmentMaxGrad(op, grad):
   """Gradient for SegmentMax."""
-  return _SegmentMinOrMaxGrad(op, grad)
+  return _SegmentMinOrMaxGrad(op, grad, True)
 
 
 @ops.RegisterGradient("UnsortedSegmentSum")
 def _UnsortedSegmentSumGrad(op, grad):
   """Gradient for SegmentSum."""
   return array_ops.gather(grad, op.inputs[1]), None, None
+
+
+@ops.RegisterGradient("UnsortedSegmentMax")
+def _UnsortedSegmentMaxGrad(op, grad):
+  return _SegmentMinOrMaxGrad(op, grad, False)
 
 
 @ops.RegisterGradient("Abs")
@@ -760,24 +772,25 @@ def _SelectGrad(op, grad):
 
 @ops.RegisterGradient("MatMul")
 def _MatMulGrad(op, grad):
+  """Gradient for MatMul."""
+
   t_a = op.get_attr("transpose_a")
   t_b = op.get_attr("transpose_b")
+  a = math_ops.conj(op.inputs[0])
+  b = math_ops.conj(op.inputs[1])
   if not t_a and not t_b:
-    return (math_ops.matmul(
-        grad, op.inputs[1], transpose_b=True), math_ops.matmul(
-            op.inputs[0], grad, transpose_a=True))
+    grad_a = math_ops.matmul(grad, b, transpose_b=True)
+    grad_b = math_ops.matmul(a, grad, transpose_a=True)
   elif not t_a and t_b:
-    return (math_ops.matmul(grad, op.inputs[1]), math_ops.matmul(
-        grad, op.inputs[0], transpose_a=True))
+    grad_a = math_ops.matmul(grad, b)
+    grad_b = math_ops.matmul(grad, a, transpose_a=True)
   elif t_a and not t_b:
-    return (math_ops.matmul(
-        op.inputs[1], grad, transpose_b=True),
-            math_ops.matmul(op.inputs[0], grad))
+    grad_a = math_ops.matmul(b, grad, transpose_b=True)
+    grad_b = math_ops.matmul(a, grad)
   elif t_a and t_b:
-    return (math_ops.matmul(
-        op.inputs[1], grad, transpose_a=True, transpose_b=True),
-            math_ops.matmul(
-                grad, op.inputs[0], transpose_a=True, transpose_b=True))
+    grad_a = math_ops.matmul(b, grad, transpose_a=True, transpose_b=True)
+    grad_b = math_ops.matmul(grad, a, transpose_a=True, transpose_b=True)
+  return grad_a, grad_b
 
 
 @ops.RegisterGradient("SparseMatMul")

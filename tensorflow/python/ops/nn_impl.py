@@ -30,6 +30,7 @@ from tensorflow.python.ops import gen_nn_ops
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import nn_ops
 from tensorflow.python.ops import sparse_ops
+from tensorflow.python.ops import variables
 
 
 def log_poisson_loss(targets, log_input, compute_full_loss=False, name=None):
@@ -349,8 +350,7 @@ def depthwise_conv2d(input, filter, strides, padding, rate=None, name=None):
     strides: 1-D of size 4.  The stride of the sliding window for each
       dimension of `input`.
     padding: A string, either `'VALID'` or `'SAME'`. The padding algorithm.
-      See the [comment
-        here](https://www.tensorflow.org/api_docs/python/nn.html#convolution)
+      See the @{tf.nn.convolution$comment here}
     rate: 1-D of size 2. The dilation rate in which we sample input values
       across the `height` and `width` dimensions in atrous convolution. If it is
       greater than 1, then all values of strides must be 1.
@@ -426,8 +426,7 @@ def separable_conv2d(input,
     strides: 1-D of size 4.  The strides for the depthwise convolution for
       each dimension of `input`.
     padding: A string, either `'VALID'` or `'SAME'`.  The padding algorithm.
-      See the [comment
-        here](https://www.tensorflow.org/api_docs/python/nn.html#convolution)
+      See the @{tf.nn.convolution$comment here}
     rate: 1-D of size 2. The dilation rate in which we sample input values
       across the `height` and `width` dimensions in atrous convolution. If it is
       greater than 1, then all values of strides must be 1.
@@ -925,6 +924,8 @@ def _compute_sampled_logits(weights,
         `nn.softmax_cross_entropy_with_logits` (sampled softmax).
   """
 
+  if isinstance(weights, variables.PartitionedVariable):
+    weights = list(weights)
   if not isinstance(weights, list):
     weights = [weights]
 
@@ -947,8 +948,10 @@ def _compute_sampled_logits(weights,
           range_max=num_classes)
     # NOTE: pylint cannot tell that 'sampled_values' is a sequence
     # pylint: disable=unpacking-non-sequence
-    sampled, true_expected_count, sampled_expected_count = sampled_values
+    sampled, true_expected_count, sampled_expected_count = (
+        array_ops.stop_gradient(s) for s in sampled_values)
     # pylint: enable=unpacking-non-sequence
+    sampled = math_ops.cast(sampled, dtypes.int64)
 
     # labels_flat is a [batch_size * num_true] tensor
     # sampled is a [num_sampled] int tensor
@@ -1053,12 +1056,36 @@ def nce_loss(weights,
   unnormalized statistical
   models](http://www.jmlr.org/proceedings/papers/v9/gutmann10a/gutmann10a.pdf).
   Also see our [Candidate Sampling Algorithms
-  Reference](../../extras/candidate_sampling.pdf)
+  Reference](https://www.tensorflow.org/extras/candidate_sampling.pdf)
+
+  A common use case is to use this method for training, and calculate the full
+  sigmoid loss for evaluation or inference. In this case, you must set
+  `partition_strategy="div"` for the two losses to be consistent, as in the
+  following example:
+
+  ```python
+  if mode == "train":
+    loss = tf.nn.nce_loss(
+        weights=weights,
+        biases=biases,
+        labels=labels,
+        inputs=inputs,
+        ...,
+        partition_strategy="div")
+  elif mode == "eval":
+    logits = tf.matmul(inputs, tf.transpose(weights))
+    logits = tf.nn.bias_add(logits, biases)
+    labels_one_hot = tf.one_hot(labels, n_classes)
+    loss = tf.nn.sigmoid_cross_entropy_with_logits(
+        labels=labels_one_hot,
+        logits=logits)
+    loss = tf.reduce_sum(loss, axis=1)
+  ```
 
   Note: By default this uses a log-uniform (Zipfian) distribution for sampling,
   so your labels must be sorted in order of decreasing frequency to achieve
   good results.  For more details, see
-  [log_uniform_candidate_sampler](#log_uniform_candidate_sampler).
+  @{tf.nn.log_uniform_candidate_sampler}.
 
   Note: In the case where `num_true` > 1, we assign to each target class
   the target probability 1 / `num_true` so that the target probabilities
@@ -1090,7 +1117,7 @@ def nce_loss(weights,
         `True`, this is a "Sampled Logistic" loss instead of NCE, and we are
         learning to generate log-odds instead of log probabilities.  See
         our [Candidate Sampling Algorithms Reference]
-        (../../extras/candidate_sampling.pdf).
+        (https://www.tensorflow.org/extras/candidate_sampling.pdf).
         Default is False.
     partition_strategy: A string specifying the partitioning strategy, relevant
         if `len(weights) > 1`. Currently `"div"` and `"mod"` are supported.
@@ -1139,11 +1166,31 @@ def sampled_softmax_loss(weights,
   This operation is for training only.  It is generally an underestimate of
   the full softmax loss.
 
-  At inference time, you can compute full softmax probabilities with the
-  expression `tf.nn.softmax(tf.matmul(inputs, tf.transpose(weights)) + biases)`.
+  A common use case is to use this method for training, and calculate the full
+  softmax loss for evaluation or inference. In this case, you must set
+  `partition_strategy="div"` for the two losses to be consistent, as in the
+  following example:
+
+  ```python
+  if mode == "train":
+    loss = tf.nn.sampled_softmax_loss(
+        weights=weights,
+        biases=biases,
+        labels=labels,
+        inputs=inputs,
+        ...,
+        partition_strategy="div")
+  elif mode == "eval":
+    logits = tf.matmul(inputs, tf.transpose(weights))
+    logits = tf.nn.bias_add(logits, biases)
+    labels_one_hot = tf.one_hot(labels, n_classes)
+    loss = tf.nn.softmax_cross_entropy_with_logits(
+        labels=labels_one_hot,
+        logits=logits)
+  ```
 
   See our [Candidate Sampling Algorithms Reference]
-  (../../extras/candidate_sampling.pdf)
+  (https://www.tensorflow.org/extras/candidate_sampling.pdf)
 
   Also see Section 3 of [Jean et al., 2014](http://arxiv.org/abs/1412.2007)
   ([pdf](http://arxiv.org/pdf/1412.2007.pdf)) for the math.

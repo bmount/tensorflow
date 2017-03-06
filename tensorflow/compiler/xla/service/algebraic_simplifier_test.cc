@@ -24,6 +24,7 @@ limitations under the License.
 #include "tensorflow/compiler/xla/service/hlo_computation.h"
 #include "tensorflow/compiler/xla/service/hlo_instruction.h"
 #include "tensorflow/compiler/xla/service/hlo_opcode.h"
+#include "tensorflow/compiler/xla/service/hlo_pass_fix.h"
 #include "tensorflow/compiler/xla/shape_util.h"
 #include "tensorflow/compiler/xla/test_helpers.h"
 #include "tensorflow/compiler/xla/tests/hlo_test_base.h"
@@ -618,7 +619,7 @@ TEST_F(AlgebraicSimplifierTest, ReshapeReplacedWithBitcast) {
 
   AlgebraicSimplifier simplifier(/*is_layout_sensitive=*/true,
                                  bitcasting_callback());
-  ASSERT_TRUE(simplifier.Run(module.get()).ValueOrDie());
+  simplifier.Run(module.get()).ValueOrDie();
 
   // Verify that only the first reshape is replaced.
   EXPECT_NE(transformable_reshape, computation->root_instruction()->operand(0));
@@ -627,6 +628,31 @@ TEST_F(AlgebraicSimplifierTest, ReshapeReplacedWithBitcast) {
   EXPECT_EQ(dimensions_wrong_reshape,
             computation->root_instruction()->operand(1));
   EXPECT_EQ(layout_wrong_reshape, computation->root_instruction()->operand(2));
+}
+
+TEST_F(AlgebraicSimplifierTest, ReshapeAfterEffectiveUnary) {
+  HloComputation::Builder builder(TestName());
+  HloInstruction* param =
+      builder.AddInstruction(HloInstruction::CreateParameter(
+          0, ShapeUtil::MakeShape(F32, {2, 3, 4, 5}), "param"));
+  HloInstruction* movable_reshape =
+      builder.AddInstruction(HloInstruction::CreateReshape(
+          ShapeUtil::MakeShape(F32, {1, 2, 3, 4, 5}), param));
+  HloInstruction* zero = builder.AddInstruction(
+      HloInstruction::CreateConstant(LiteralUtil::CreateR0<float>(0.0f)));
+  builder.AddInstruction(
+      HloInstruction::CreateBinary(ShapeUtil::MakeShape(F32, {1, 2, 3, 4, 5}),
+                                   HloOpcode::kMaximum, movable_reshape, zero));
+  auto module = MakeUnique<HloModule>(TestName());
+  auto computation = module->AddEntryComputation(builder.Build());
+  HloInstruction* root = computation->root_instruction();
+  EXPECT_EQ(root->opcode(), HloOpcode::kMaximum);
+  AlgebraicSimplifier simplifier(/*is_layout_sensitive=*/false,
+                                 bitcasting_callback());
+  simplifier.Run(module.get()).ValueOrDie();
+  EXPECT_EQ(HloOpcode::kReshape, computation->root_instruction()->opcode());
+  EXPECT_EQ(HloOpcode::kMaximum,
+            computation->root_instruction()->operand(0)->opcode());
 }
 
 TEST_F(AlgebraicSimplifierTest, TransposeEqualsBitcast1) {
@@ -1369,7 +1395,11 @@ TEST_F(AlgebraicSimplifierTest, ScalarBroadcastToSlice) {
 
   AlgebraicSimplifier simplifier(/*is_layout_sensitive=*/false,
                                  non_bitcasting_callback());
+
   ASSERT_TRUE(simplifier.Run(&module).ValueOrDie());
+
+  // Running simplification again should not result in any further changes.
+  ASSERT_FALSE(simplifier.Run(&module).ValueOrDie());
 
   root = computation->root_instruction();
   EXPECT_EQ(root->opcode(), HloOpcode::kBroadcast);
