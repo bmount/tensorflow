@@ -9,7 +9,7 @@ great for training deep neural networks too, and you might be thinking which one
 you should choose—Well, why not both? Would it be possible to combine the
 strengths of both in one model?
 
-In this tutorial, we'll introduce how to use the TF.Learn API to jointly train a
+In this tutorial, we'll introduce how to use the tf.contrib.learn API to jointly train a
 wide linear model and a deep feed-forward neural network. This approach combines
 the strengths of memorization and generalization. It's useful for generic
 large-scale regression and classification problems with sparse input features
@@ -17,14 +17,13 @@ large-scale regression and classification problems with sparse input features
 you're interested in learning more about how Wide & Deep Learning works, please
 check out our [research paper](http://arxiv.org/abs/1606.07792).
 
-![Wide & Deep Spectrum of Models]
-(../images/wide_n_deep.svg "Wide & Deep")
+![Wide & Deep Spectrum of Models](https://www.tensorflow.org/images/wide_n_deep.svg "Wide & Deep")
 
 The figure above shows a comparison of a wide model (logistic regression with
 sparse features and transformations), a deep model (feed-forward neural network
 with an embedding layer and several hidden layers), and a Wide & Deep model
 (joint training of both). At a high level, there are only 3 steps to configure a
-wide, deep, or Wide & Deep model using the TF.Learn API:
+wide, deep, or Wide & Deep model using the tf.contrib.learn API:
 
 1.  Select features for the wide part: Choose the sparse base columns and
     crossed columns you want to use.
@@ -39,27 +38,24 @@ And that's it! Let's go through a simple example.
 
 To try the code for this tutorial:
 
-1.  @{$install$Install TensorFlow}[Install TensorFlow]  if you haven't already.
+1.  @{$install$Install TensorFlow} if you haven't already.
 
-2.  Download [the tutorial code](https://github.com/tensorflow/tensorflow/blob/master/tensorflow/examples/learn/wide_n_deep_tutorial.py).
+2.  Download [the tutorial code](https://www.tensorflow.org/code/tensorflow/examples/learn/wide_n_deep_tutorial.py).
 
-3.  Install the pandas data analysis library. tf.learn doesn't require pandas, but it does support it, and this tutorial uses pandas. To install pandas:
-    1. Get `pip`:
+3.  Install the pandas data analysis library. tf.contrib.learn doesn't require pandas, but it does support it, and this tutorial uses pandas. To install pandas:
 
-       ```shell
-       # Ubuntu/Linux 64-bit
-       $ sudo apt-get install python-pip python-dev
+    a. Get `pip`:
 
-       # Mac OS X
-       $ sudo easy_install pip
-       $ sudo easy_install --upgrade six
-      ```
+        # Ubuntu/Linux 64-bit
+        $ sudo apt-get install python-pip python-dev
 
-    2. Use `pip` to install pandas:
+        # Mac OS X
+        $ sudo easy_install pip
+        $ sudo easy_install --upgrade six
 
-       ```shell
-       $ sudo pip install pandas
-       ```
+    b. Use `pip` to install pandas:
+
+        $ sudo pip install pandas
 
     If you have trouble installing pandas, consult the
     [instructions](http://pandas.pydata.org/pandas-docs/stable/install.html)
@@ -68,9 +64,7 @@ To try the code for this tutorial:
 4. Execute the tutorial code with the following command to train the linear
 model described in this tutorial:
 
-   ```shell
-   $ python wide_n_deep_tutorial.py --model_type=wide_n_deep
-   ```
+        $ python wide_n_deep_tutorial.py --model_type=wide_n_deep
 
 Read on to find out how this code builds its linear model.
 
@@ -233,7 +227,7 @@ def input_fn(df):
   categorical_cols = {k: tf.SparseTensor(
       indices=[[i, 0] for i in range(df[k].size)],
       values=df[k].values,
-      shape=[df[k].size, 1])
+      dense_shape=[df[k].size, 1])
                       for k in CATEGORICAL_COLUMNS}
   # Merges the two dictionaries into one.
   feature_cols = dict(continuous_cols.items() + categorical_cols.items())
@@ -255,14 +249,14 @@ After reading in the data, you can train and evaluate the model:
 m.fit(input_fn=train_input_fn, steps=200)
 results = m.evaluate(input_fn=eval_input_fn, steps=1)
 for key in sorted(results):
-    print "%s: %s" % (key, results[key])
+    print("%s: %s" % (key, results[key]))
 ```
 
 The first line of the output should be something like `accuracy: 0.84429705`. We
 can see that the accuracy was improved from about 83.6% using a wide-only linear
 model to about 84.4% using a Wide & Deep model. If you'd like to see a working
 end-to-end example, you can download our
-[example code](https://github.com/tensorflow/tensorflow/blob/master/tensorflow/examples/learn/wide_n_deep_tutorial.py).
+[example code](https://www.tensorflow.org/code/tensorflow/examples/learn/wide_n_deep_tutorial.py).
 
 Note that this tutorial is just a quick example on a small dataset to get you
 familiar with the API. Wide & Deep Learning will be even more powerful if you

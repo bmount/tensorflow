@@ -16,6 +16,7 @@ limitations under the License.
 #include "tensorflow/core/framework/op_kernel.h"
 
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "tensorflow/core/framework/attr_value_util.h"
@@ -26,6 +27,7 @@ limitations under the License.
 #include "tensorflow/core/framework/node_def_util.h"
 #include "tensorflow/core/framework/op_def_util.h"
 #include "tensorflow/core/framework/types.h"
+#include "tensorflow/core/graph/graph.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/core/notification.h"
 #include "tensorflow/core/lib/core/stringpiece.h"
@@ -89,14 +91,14 @@ OpKernel::OpKernel(OpKernelConstruction* context)
       input_name_map_(context->num_inputs()),
       output_name_map_(context->num_outputs()) {
   OP_REQUIRES_OK(context,
-                 NameRangesForNode(def_, context->op_def(), &input_name_map_,
+                 NameRangesForNode(def_, *context->op_def_, &input_name_map_,
                                    &output_name_map_));
-  OP_REQUIRES_OK(context, CheckOpDeprecation(context->op_def(),
+  OP_REQUIRES_OK(context, CheckOpDeprecation(*context->op_def_,
                                              context->graph_def_version()));
 
-  // Kernels executing on GPU tie very few resources on the CPU where the
+  // Kernels executing on GPU/SYCL tie very few resources on the CPU where the
   // scheduler runs: we consider them as inexpensive.
-  expensive_ = context->device_type() != DeviceType(DEVICE_GPU);
+  expensive_ = context->device_type() != DeviceType(DEVICE_GPU) && context->device_type() != DeviceType(DEVICE_SYCL);
 }
 
 OpKernel::~OpKernel() {}
@@ -122,6 +124,23 @@ Status OpKernel::OutputRange(StringPiece output_name, int* start,
     *start = result->second.first;
     *stop = result->second.second;
     return Status::OK();
+  }
+}
+
+Status OpKernel::MakeShape(const Tensor& shape, TensorShape* out) const {
+  if (!IsLegacyVector(shape.shape())) {
+    return errors::InvalidArgument(
+        "shape must be a vector of {int32,int64}, got shape ",
+        shape.shape().DebugString());
+  }
+  if (shape.dtype() == DataType::DT_INT32) {
+    auto vec = shape.flat<int32>();
+    return TensorShapeUtils::MakeShape(vec.data(), vec.size(), out);
+  } else if (shape.dtype() == DataType::DT_INT64) {
+    auto vec = shape.flat<int64>();
+    return TensorShapeUtils::MakeShape(vec.data(), vec.size(), out);
+  } else {
+    return errors::InvalidArgument("shape must be a vector of {int32,int64}.");
   }
 }
 
@@ -402,17 +421,6 @@ Status OpKernelContext::forward_input_to_output_with_shape(
 std::unique_ptr<Tensor> OpKernelContext::forward_input(
     int input_index, DataType output_dtype, const TensorShape& output_shape,
     MemoryType output_memory_type, const AllocatorAttributes& output_attr) {
-  // TODO(rmlarsen,zhengxq): Re-enable for GPU memory once kernels have been
-  // made forwarding aware or decorated to expose which inputs they rely on
-  // to access via the read-only texture cache.
-  // TODO(rmlarsen): Short term, move disabling logic into the kernels
-  // themselves for fine-grained control.
-  DCHECK(params_->device != nullptr);
-  if (output_memory_type == DEVICE_MEMORY &&
-      params_->device->attributes().device_type() == DEVICE_GPU) {
-    return nullptr;
-  }
-
   DCHECK_GE(input_index, 0);
   DCHECK_LT(input_index, num_inputs());
   const TensorValue& input = (*params_->inputs)[input_index];
@@ -447,6 +455,21 @@ std::unique_ptr<Tensor> OpKernelContext::forward_input(
   std::unique_ptr<Tensor> output_tensor(new Tensor());
   CHECK(output_tensor->CopyFrom(*input.tensor, output_shape));
   return output_tensor;
+}
+
+Status OpKernelContext::forward_input_or_allocate_temp(
+    gtl::ArraySlice<int> candidate_input_indices, DataType type,
+    const TensorShape& shape, const AllocatorAttributes& allocator_attr,
+    Tensor* out_temp) {
+  for (int input_index : candidate_input_indices) {
+    std::unique_ptr<Tensor> new_tensor =
+        forward_input(input_index, type, shape, DEVICE_MEMORY, allocator_attr);
+    if (new_tensor != nullptr) {
+      *out_temp = std::move(*new_tensor);
+      return Status::OK();
+    }
+  }
+  return allocate_temp(type, shape, out_temp, allocator_attr);
 }
 
 void OpKernelContext::delete_ref_input(int index, bool lock_held) {
@@ -607,7 +630,7 @@ Status OpKernelContext::allocate_temp(
     const AllocationAttributes& allocation_attr) {
   Status s =
       allocate_tensor(type, shape, out_temp, allocator_attr, allocation_attr);
-  if (track_allocations()) {
+  if (track_allocations() && out_temp->TotalBytes() > 0) {
     Allocator* a = get_allocator(allocator_attr);
     if (a->TracksAllocationSizes()) {
       int64 alloc_size =
@@ -633,24 +656,6 @@ Status OpKernelContext::allocate_persistent(DataType type,
     *out_persistent = PersistentTensor(persistent);
     if (out_tensor) {
       *out_tensor = out_persistent->AccessTensor(this);
-    }
-  }
-  if (track_allocations()) {
-    Allocator* a = get_allocator(attr);
-    if (a->TracksAllocationSizes()) {
-      int64 alloc_size =
-          a->AllocatedSize(const_cast<char*>(persistent.tensor_data().data()));
-      int64 alloc_id =
-          a->AllocationId(const_cast<char*>(persistent.tensor_data().data()));
-      if (allocate_on_host(attr)) {
-        record_host_persistent_memory_allocation(alloc_size, alloc_id);
-        // This function has called allocate_temp(), so we need to deduct the
-        // recorded temp memory size.
-        record_host_temp_memory_size(-alloc_size);
-      } else {
-        record_device_persistent_memory_allocation(alloc_size, alloc_id);
-        record_device_temp_memory_size(-alloc_size);
-      }
     }
   }
   return s;
@@ -804,7 +809,7 @@ static KernelRegistry* GlobalKernelRegistryTyped() {
   return reinterpret_cast<KernelRegistry*>(GlobalKernelRegistry());
 }
 
-static string Key(StringPiece op_type, DeviceType device_type,
+static string Key(StringPiece op_type, const DeviceType& device_type,
                   StringPiece label) {
   return strings::StrCat(op_type, ":", DeviceTypeString(device_type), ":",
                          label);
@@ -838,13 +843,10 @@ bool InTypeList(DataType dt, const AttrValue& type_list) {
   return false;
 }
 
-// Returns whether the attrs in the NodeDef satisfy the constraints in
-// the kernel_def.  Returns an error if attrs in kernel_def are not
-// found, or have a mismatching type.
-Status AttrsMatch(const NodeDef& node_def, const KernelDef& kernel_def,
-                  bool* match) {
+// Returns whether the attrs satisfy the constraints in the kernel_def.  Returns
+// an error if attrs in kernel_def are not found, or have a mismatching type.
+Status AttrsMatch(AttrSlice attrs, const KernelDef& kernel_def, bool* match) {
   *match = false;
-  AttrSlice attrs(node_def);
   for (const auto& constraint : kernel_def.constraint()) {
     if (constraint.allowed_values().list().type_size() == 0) {
       return errors::Unimplemented(
@@ -868,7 +870,7 @@ Status AttrsMatch(const NodeDef& node_def, const KernelDef& kernel_def,
               "' that has value '", SummarizeAttrValue(*found),
               "' that does not have type 'type' or 'list(type)' in NodeDef "
               "'",
-              SummarizeNodeDef(node_def), "'");
+              attrs.SummarizeNode(), "'");
         }
 
         for (int t : found->list().type()) {
@@ -881,7 +883,7 @@ Status AttrsMatch(const NodeDef& node_def, const KernelDef& kernel_def,
     } else {
       return errors::InvalidArgument(
           "OpKernel '", kernel_def.op(), "' has constraint on attr '",
-          constraint.name(), "' not in NodeDef '", SummarizeNodeDef(node_def),
+          constraint.name(), "' not in NodeDef '", attrs.SummarizeNode(),
           "', KernelDef: '", ProtoShortDebugString(kernel_def), "'");
     }
   }
@@ -889,13 +891,18 @@ Status AttrsMatch(const NodeDef& node_def, const KernelDef& kernel_def,
   return Status::OK();
 }
 
-Status FindKernelRegistration(DeviceType device_type, const NodeDef& node_def,
+static const StringPiece kKernelAttr("_kernel");
+
+// TODO(irving): Replace with const Node& version below.
+Status FindKernelRegistration(const DeviceType& device_type,
+                              const NodeDef& node_def,
                               const KernelRegistration** reg,
                               bool* was_attr_mismatch) {
   *reg = nullptr;
   *was_attr_mismatch = false;
-  string label;  // Label defaults to empty if not found in NodeDef.
-  GetNodeAttr(node_def, "_kernel", &label).IgnoreError();
+  // Label defaults to empty if not found in NodeDef.
+  const string& label = GetNodeAttrString(node_def, kKernelAttr);
+
   const string key = Key(node_def.op(), device_type, label);
   auto regs = GlobalKernelRegistryTyped()->equal_range(key);
   for (auto iter = regs.first; iter != regs.second; ++iter) {
@@ -919,9 +926,17 @@ Status FindKernelRegistration(DeviceType device_type, const NodeDef& node_def,
   return Status::OK();
 }
 
+Status FindKernelRegistration(const DeviceType& device_type, const Node& node,
+                              const KernelRegistration** reg,
+                              bool* was_attr_mismatch) {
+  return FindKernelRegistration(device_type, node.def(), reg,
+                                was_attr_mismatch);
+}
+
 }  // namespace
 
-Status FindKernelDef(DeviceType device_type, const NodeDef& node_def,
+// TODO(irving): Change const NodeDef& to const Node&
+Status FindKernelDef(const DeviceType& device_type, const NodeDef& node_def,
                      const KernelDef** def, string* kernel_class_name) {
   const KernelRegistration* reg = nullptr;
   bool was_attr_mismatch;
@@ -1003,8 +1018,8 @@ std::unique_ptr<OpKernel> CreateOpKernel(
     DeviceType device_type, DeviceBase* device, Allocator* allocator,
     const NodeDef& node_def, int graph_def_version, Status* status) {
   OpKernel* kernel = nullptr;
-  *status = CreateOpKernel(device_type, device, allocator, nullptr, node_def,
-                           graph_def_version, &kernel);
+  *status = CreateOpKernel(std::move(device_type), device, allocator, nullptr,
+                           node_def, graph_def_version, &kernel);
   return std::unique_ptr<OpKernel>(kernel);
 }
 

@@ -28,12 +28,28 @@ See the @{$python/contrib.learn} guide.
 @@MetricSpec
 @@PredictionKey
 @@DNNClassifier
+@@DNNEstimator
 @@DNNRegressor
 @@DNNLinearCombinedRegressor
+@@DNNLinearCombinedEstimator
 @@DNNLinearCombinedClassifier
+@@DynamicRnnEstimator
 @@LinearClassifier
+@@LinearEstimator
 @@LinearRegressor
 @@LogisticRegressor
+@@StateSavingRnnEstimator
+@@SVM
+@@SKCompat
+
+@@Head
+@@multi_class_head
+@@multi_label_head
+@@binary_svm_head
+@@regression_head
+@@poisson_regression_head
+@@multi_head
+@@no_op_train_fn
 
 @@Experiment
 @@ExportStrategy
@@ -72,9 +88,11 @@ from __future__ import print_function
 from tensorflow.contrib.learn.python.learn import *
 # pylint: enable=wildcard-import
 
+from tensorflow.contrib.learn.python.learn import learn_runner_lib as learn_runner
+
 from tensorflow.python.util.all_util import remove_undocumented
 
-_allowed_symbols = ['datasets', 'head', 'io', 'models',
+_allowed_symbols = ['datasets', 'head', 'io', 'learn_runner', 'models',
                     'monitors', 'NotFittedError', 'ops', 'preprocessing',
                     'utils', 'graph_actions']
 

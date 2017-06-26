@@ -22,6 +22,7 @@ limitations under the License.
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/platform/macros.h"
+#include "tensorflow/core/util/stream_executor_util.h"
 
 namespace tensorflow {
 
@@ -31,8 +32,9 @@ namespace tensorflow {
 // Once all inputs are present, and their shapes are known, the op can
 // use a 'XlaCompilationCache' to compile and execute code which is specific
 // to the shapes of input Tensors.
-// XlaLocalLaunchOp uses xla::LocalClient::ExecuteLocally and passes
-// arguments into/out of XLA in device memory.
+// XlaLocalLaunchOp uses xla::LocalClient::Compile() and
+// xla::LocalExecutable::Run(), and passes arguments into/out of XLA in device
+// memory.
 class XlaLocalLaunchOp : public OpKernel {
  public:
   explicit XlaLocalLaunchOp(OpKernelConstruction* ctx);
@@ -42,11 +44,15 @@ class XlaLocalLaunchOp : public OpKernel {
 
  private:
   // Builds a XlaCompilationCache class suitable for the current device.
-  Status BuildCompilationCache(XlaCompilationCache** compiler);
+  Status BuildCompilationCache(OpKernelContext* ctx,
+                               XlaCompilationCache** compiler);
 
   DeviceType device_type_;
   NameAttrList function_;
   int num_constant_args_;
+
+  perftools::gputools::Platform::Id platform_id_;
+
   TF_DISALLOW_COPY_AND_ASSIGN(XlaLocalLaunchOp);
 };
 

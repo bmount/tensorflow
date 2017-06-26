@@ -2,7 +2,7 @@
 
 This document shows how to create a cluster of TensorFlow servers, and how to
 distribute a computation graph across that cluster. We assume that you are
-familiar with the @{$get_started$basic concepts} of
+familiar with the @{$get_started/get_started$basic concepts} of
 writing TensorFlow programs.
 
 ## Hello distributed TensorFlow!
@@ -26,6 +26,12 @@ method creates a single-process cluster, with an in-process server.
 
 ## Create a cluster
 
+<div class="video-wrapper">
+  <iframe class="devsite-embedded-youtube-video" data-video-id="la_M6bCV91M"
+          data-autohide="1" data-showinfo="0" frameborder="0" allowfullscreen>
+  </iframe>
+</div>
+
 A TensorFlow "cluster" is a set of "tasks" that participate in the distributed
 execution of a TensorFlow graph. Each task is associated with a TensorFlow
 "server", which contains a "master" that can be used to create sessions, and a
@@ -48,7 +54,7 @@ the following:
 ### Create a `tf.train.ClusterSpec` to describe the cluster
 
 The cluster specification dictionary maps job names to lists of network
-adresses. Pass this dictionary to
+addresses. Pass this dictionary to
 the @{tf.train.ClusterSpec}
 constructor.  For example:
 
@@ -172,7 +178,7 @@ simplify the work of specifying a replicated model. Possible approaches include:
   values for the current parameters, compute gradients in parallel, and then
   apply them together. It is compatible with in-graph replication (e.g. using
   gradient averaging as in the
-  [CIFAR-10 multi-GPU trainer](https://www.tensorflow.org/code/tensorflow_models/tutorials/image/cifar10/cifar10_multi_gpu_train.py)),
+  [CIFAR-10 multi-GPU trainer](https://github.com/tensorflow/models/tree/master/tutorials/image/cifar10/cifar10_multi_gpu_train.py)),
   and between-graph replication (e.g. using the
   @{tf.train.SyncReplicasOptimizer}).
 

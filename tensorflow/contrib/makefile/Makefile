@@ -279,6 +279,20 @@ ifeq ($(TARGET),ANDROID)
 		LIBS += -lhexagon_controller
 		LDFLAGS += -L$(HEXAGON_LIBS)
 		CXXFLAGS += -DUSE_HEXAGON_LIBS
+
+# CAVEAT: We should disable TENSORFLOW_DISABLE_META while running
+# quantized_matmul on Android because it crashes in
+# MultiThreadGemm in tensorflow/core/kernels/meta_support.cc
+# See http://b/33270149
+# TODO(satok): Remove once it's fixed
+		CXXFLAGS += -DTENSORFLOW_DISABLE_META
+
+# Declare __ANDROID_TYPES_FULL__ to enable required types for hvx
+		CXXFLAGS += -D__ANDROID_TYPES_FULL__
+	endif
+
+	ifdef ENABLE_EXPERIMENTAL_HEXNN_OPS
+		CXXFLAGS += -DENABLE_EXPERIMENTAL_HEXNN_OPS
 	endif
 
 endif  # ANDROID
@@ -293,7 +307,7 @@ ifeq ($(TARGET),IOS)
 	IPHONESIMULATOR_SYSROOT := $(shell xcrun --sdk iphonesimulator \
 	--show-sdk-path)
 	IOS_SDK_VERSION := $(shell xcrun --sdk iphoneos --show-sdk-version)
-	MIN_SDK_VERSION := 8.2
+	MIN_SDK_VERSION := 8.0
 # Override IOS_ARCH with ARMV7, ARMV7S, ARM64, or I386.
 	IOS_ARCH := X86_64
 	ifeq ($(IOS_ARCH),ARMV7)
@@ -370,6 +384,7 @@ ifeq ($(TARGET),IOS)
 	ifeq ($(IOS_ARCH),I386)
 		CXXFLAGS += -mios-simulator-version-min=$(MIN_SDK_VERSION) \
 		-arch i386 \
+		-mno-sse \
 		-fembed-bitcode \
 		-D__thread= \
 		-DUSE_GEMM_FOR_CONV \
@@ -435,6 +450,8 @@ $(wildcard tensorflow/core/*.cc) \
 $(wildcard tensorflow/core/common_runtime/*.cc) \
 $(wildcard tensorflow/core/framework/*.cc) \
 $(wildcard tensorflow/core/graph/*.cc) \
+$(wildcard tensorflow/core/grappler/*.cc) \
+$(wildcard tensorflow/core/grappler/*/*.cc) \
 $(wildcard tensorflow/core/lib/*/*.cc) \
 $(wildcard tensorflow/core/platform/*.cc) \
 $(wildcard tensorflow/core/platform/*/*.cc) \
@@ -477,7 +494,9 @@ $(wildcard tensorflow/core/platform/stream_executor.*) \
 $(wildcard tensorflow/core/platform/windows/*) \
 $(wildcard tensorflow/core/user_ops/*.cu.cc) \
 $(wildcard tensorflow/core/common_runtime/gpu/*) \
-$(wildcard tensorflow/core/common_runtime/gpu_device_factory.*)
+$(wildcard tensorflow/core/common_runtime/gpu_device_factory.*) \
+$(wildcard tensorflow/core/grappler/inputs/trivial_test_graph_input_yielder.*) \
+$(wildcard tensorflow/core/grappler/clusters/single_machine.*)
 # Filter out all the excluded files.
 TF_CC_SRCS := $(filter-out $(CORE_CC_EXCLUDE_SRCS), $(CORE_CC_ALL_SRCS))
 # Add in any extra files that don't fit the patterns easily
@@ -490,6 +509,18 @@ BENCHMARK_SRCS := \
 tensorflow/core/util/reporter.cc \
 tensorflow/tools/benchmark/benchmark_model.cc \
 tensorflow/tools/benchmark/benchmark_model_main.cc
+
+ifdef HEXAGON_LIBS
+	TF_CC_SRCS += \
+tensorflow/cc/framework/scope.cc \
+tensorflow/cc/framework/ops.cc \
+tensorflow/cc/ops/const_op.cc \
+tensorflow/core/kernels/hexagon/graph_transfer_utils.cc \
+tensorflow/core/kernels/hexagon/graph_transferer.cc \
+tensorflow/core/kernels/hexagon/hexagon_control_wrapper.cc \
+tensorflow/core/kernels/hexagon/hexagon_ops_definitions.cc \
+tensorflow/core/kernels/hexagon/hexagon_remote_fused_graph_executor_build.cc
+endif
 
 # File names of the intermediate files target compilation generates.
 TF_CC_OBJS := $(addprefix $(OBJDIR), $(TF_CC_SRCS:.cc=.o))

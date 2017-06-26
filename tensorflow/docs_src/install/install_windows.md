@@ -38,9 +38,10 @@ installed on your system:
     [NVIDIA documentation](https://developer.nvidia.com/cuda-gpus) for a
     list of supported GPU cards.
 
-If you have an earlier version of the preceding packages, please
-upgrade to the specified versions.
-
+If you have a different version of one of the preceding packages, please
+change to the specified versions.  In particular, the cuDNN version
+must match exactly: TensorFlow will not load if it cannot find `cuDNN64_5.dll`.
+To use a different version of cuDNN, you must build from source.
 
 ## Determine how to install TensorFlow
 
@@ -73,7 +74,7 @@ Use that package at your own risk.
 If the following version of Python is not installed on your machine,
 install it now:
 
-  * [Python 3.5.x from python.org](https://www.python.org/downloads/release/python-352/)
+  * [Python 3.5.x 64-bit from python.org](https://www.python.org/downloads/release/python-352/)
 
 TensorFlow only supports version 3.5.x of Python on Windows.
 Note that Python 3.5.x comes with the pip3 package manager, which is the
@@ -103,7 +104,7 @@ Take the following steps to install TensorFlow in an Anaconda environment:
   2. Create a conda environment named <tt>tensorflow</tt>
      by invoking the following command:
 
-     <pre>C:\> <b>conda create -n tensorflow</b> </pre>
+     <pre>C:\> <b>conda create -n tensorflow python=3.5</b> </pre>
 
   3. Activate the conda environment by issuing the following command:
 
@@ -114,42 +115,42 @@ Take the following steps to install TensorFlow in an Anaconda environment:
      environment. To install the CPU-only version of TensorFlow, enter the
      following command:
 
-     <pre>(tensorflow)C:\> <b>pip install --ignore-installed --upgrade https://storage.googleapis.com/tensorflow/windows/cpu/tensorflow-1.0.0-cp35-cp35m-win_amd64.whl</b> </pre>
+     <pre>(tensorflow)C:\> <b>pip install --ignore-installed --upgrade https://storage.googleapis.com/tensorflow/windows/cpu/tensorflow-1.2.0-cp35-cp35m-win_amd64.whl</b> </pre>
 
      To install the GPU version of TensorFlow, enter the following command
      (on a single line):
 
-     <pre>(tensorflow)C:\> <b>pip install --ignore-installed --upgrade https://storage.googleapis.com/tensorflow/windows/gpu/tensorflow_gpu-1.0.0-cp35-cp35m-win_amd64.whl</b> </pre>
+     <pre>(tensorflow)C:\> <b>pip install --ignore-installed --upgrade https://storage.googleapis.com/tensorflow/windows/gpu/tensorflow_gpu-1.2.0-cp35-cp35m-win_amd64.whl</b> </pre>
 
-<a name="#ValidateYourInstallation"></a>
 ## Validate your installation
 
-Validate your TensorFlow installation by doing the following:
+Start a terminal.
 
-  1. Start a terminal.
-  2. If you installed through Anaconda, activate your Anaconda environment.
-  3. Inside that terminal, invoke python:
+If you installed through Anaconda, activate your Anaconda environment.
 
-     <pre>C:\> <b>python</b> </pre>
+Invoke python from your shell as follows:
 
-  4. Enter the following short program inside the python interactive shell:
+<pre>$ <b>python</b></pre>
 
-     <pre>>>> <b>import tensorflow as tf</b>
-     >>> <b>hello = tf.constant('Hello, TensorFlow!')</b>
-     >>> <b>sess = tf.Session()</b>
-     >>> <b>print(sess.run(hello))</b>
-     </pre>
+Enter the following short program inside the python interactive shell:
 
-     If the Python program outputs the following, then the installation
-     is successful and you can begin writing TensorFlow programs. (If you
-     are new to TensorFlow, see
-     @{$get_started$Getting Started with TensorFlow}.)
+```python
+>>> import tensorflow as tf
+>>> hello = tf.constant('Hello, TensorFlow!')
+>>> sess = tf.Session()
+>>> print(sess.run(hello))
+```
 
-     <pre>Hello, TensorFlow!</pre>
+If the system outputs the following, then you are ready to begin writing
+TensorFlow programs:
 
-     If the system generates an error message instead of a greeting,
-     see the next section.
+<pre>Hello, TensorFlow!</pre>
 
+If you are new to TensorFlow, see @{$get_started/get_started$Getting Started with
+TensorFlow}.
+
+If the system outputs an error message instead of a greeting, see [Common
+installation problems](#common_installation_problems).
 
 ## Common installation problems
 
@@ -193,5 +194,20 @@ ImportError: cannot import name 'descriptor'</pre>
   <td><pre>No module named "pywrap_tensorflow"</pre></td>
 </tr>
 
-<table>
+<tr>
+  <td><a href="https://stackoverflow.com/q/42217532">42217532</a></td>
+  <td>
+  <pre>OpKernel ('op: "BestSplits" device_type: "CPU"') for unknown op: BestSplits</pre>
+  </td>
+</tr>
+
+<tr>
+  <td><a href="https://stackoverflow.com/q/43134753">43134753</a></td>
+  <td>
+  <pre>The TensorFlow library wasn't compiled to use SSE instructions</pre>
+  </td>
+</tr>
+
+
+</table>
 

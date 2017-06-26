@@ -39,6 +39,8 @@ namespace gpu = perftools::gputools;
 namespace tensorflow {
 
 // Adapter class that wraps a Tensorflow allocator as an XLA allocator.
+// Assumes that the Tensorflow allocator permits asynchronous deallocation:
+// see comment on `AllowsAsynchronousDeallocation()`.
 class XlaAllocator : public xla::DeviceMemoryAllocator {
  public:
   XlaAllocator(const perftools::gputools::Platform* platform,
@@ -53,6 +55,15 @@ class XlaAllocator : public xla::DeviceMemoryAllocator {
   // interpreted as having data type 'dtype' and shape 'shape'.
   Status MakeTensorFromBuffer(gpu::DeviceMemoryBase buffer, DataType dtype,
                               const TensorShape& shape, Tensor* tensor) const;
+
+  // The Tensorflow BFC allocator used on GPU allows host-side deallocation
+  // before GPU execution takes place. Tensorflow uses the ordering of the main
+  // compute stream to enforce a happens-before relationship between a memory
+  // allocation and code that reuses the same memory. If Tensorflow adds
+  // support for multiple GPU streams or allocators with different ordering
+  // requirements, this code may need to change.
+  // (This attribute has no effect on CPU.)
+  bool AllowsAsynchronousDeallocation() const override { return true; }
 
  private:
   OpKernelContext* const op_context_;
@@ -137,24 +148,28 @@ XlaLocalLaunchOp::XlaLocalLaunchOp(OpKernelConstruction* ctx)
   OP_REQUIRES(ctx, num_resource_args == 0,
               errors::Unimplemented(
                   "XlaLocalLaunchOp does not support resource variables"));
+  if (device_type_ == DeviceType(DEVICE_CPU)) {
+    platform_id_ = gpu::host::kHostPlatformId;
+  } else if (device_type_ == DeviceType(DEVICE_GPU)) {
+    platform_id_ = gpu::cuda::kCudaPlatformId;
+  } else {
+    ctx->SetStatus(
+        errors::InvalidArgument("Unknown device type for local _XlaLaunch"));
+    return;
+  }
 }
 
-Status XlaLocalLaunchOp::BuildCompilationCache(XlaCompilationCache** compiler) {
-  gpu::Platform::Id platform_id;
-  if (device_type_ == DeviceType(DEVICE_CPU)) {
-    platform_id = gpu::host::kHostPlatformId;
-  } else if (device_type_ == DeviceType(DEVICE_GPU)) {
-    platform_id = gpu::cuda::kCudaPlatformId;
-  } else {
-    return errors::InvalidArgument("Unknown device type for local _XlaLaunch");
-  }
-
-  auto platform = gpu::MultiPlatformManager::PlatformWithId(platform_id);
+Status XlaLocalLaunchOp::BuildCompilationCache(OpKernelContext* ctx,
+                                               XlaCompilationCache** cache) {
+  auto platform = gpu::MultiPlatformManager::PlatformWithId(platform_id_);
   if (!platform.ok()) {
     return StreamExecutorUtil::ConvertStatus(platform.status());
   }
-  auto client =
-      xla::ClientLibrary::GetOrCreateLocalClient(platform.ValueOrDie());
+  xla::LocalClientOptions client_options;
+  client_options.set_platform(platform.ValueOrDie());
+  client_options.set_intra_op_parallelism_threads(
+      ctx->device()->tensorflow_cpu_worker_threads()->num_threads);
+  auto client = xla::ClientLibrary::GetOrCreateLocalClient(client_options);
   if (!client.ok()) {
     return client.status();
   }
@@ -164,18 +179,14 @@ Status XlaLocalLaunchOp::BuildCompilationCache(XlaCompilationCache** compiler) {
     return errors::InvalidArgument("No JIT device registered for ",
                                    device_type_.type());
   }
-  XlaCompiler::Options options;
-  options.device_type = DeviceType(registration->compilation_device_name);
-  options.client = client.ValueOrDie();
-  options.allow_cpu_custom_calls = (platform_id == gpu::host::kHostPlatformId);
-  options.local_executable_has_hybrid_result = true;
-  *compiler = new XlaCompilationCache(options);
+  *cache = new XlaCompilationCache(
+      client.ValueOrDie(), DeviceType(registration->compilation_device_name));
   return Status::OK();
 }
 
 void XlaLocalLaunchOp::Compute(OpKernelContext* ctx) {
   VLOG(1) << "XlaLocalLaunchOp::Compute "
-          << Canonicalize(function_.name(), function_.attr());
+          << Canonicalize(function_.name(), AttrSlice(&function_.attr()));
   // We store information about the JIT-compiled XLA computation
   // in the ResourceMgr.
   ResourceMgr* rm = ctx->resource_manager();
@@ -184,23 +195,31 @@ void XlaLocalLaunchOp::Compute(OpKernelContext* ctx) {
   gpu::Stream* stream =
       ctx->op_device_context() ? ctx->op_device_context()->stream() : nullptr;
 
-  XlaCompilationCache* compiler;
+  XlaCompilationCache* cache;
   OP_REQUIRES_OK(ctx, rm->LookupOrCreate<XlaCompilationCache>(
-                          rm->default_container(), "xla_compiler", &compiler,
-                          [this](XlaCompilationCache** compiler) {
-                            return BuildCompilationCache(compiler);
+                          rm->default_container(), "xla_cache", &cache,
+                          [this, ctx](XlaCompilationCache** cache) {
+                            return BuildCompilationCache(ctx, cache);
                           }));
   // Hold the reference to the JIT during evaluation. (We could probably
   // free it sooner because the ResourceMgr will retain a reference, but
   // this is more obviously correct.)
-  core::ScopedUnref compiler_ref(compiler);
+  core::ScopedUnref cache_ref(cache);
 
-  xla::LocalClient* client = static_cast<xla::LocalClient*>(compiler->client());
+  xla::LocalClient* client = static_cast<xla::LocalClient*>(cache->client());
+
+  XlaCompiler::Options options;
+  options.client = client;
+  options.device_type = &cache->device_type();
+  options.flib_def = ctx->function_library()->GetFunctionLibraryDefinition();
+  options.graph_def_version = ctx->function_library()->graph_def_version();
+  options.allow_cpu_custom_calls = (platform_id_ == gpu::host::kHostPlatformId);
+  options.local_executable_has_hybrid_result = true;
 
   const XlaCompiler::CompilationResult* kernel;
   xla::LocalExecutable* executable;
-  OP_REQUIRES_OK(ctx, compiler->Compile(function_, num_constant_args_, {}, ctx,
-                                        &kernel, &executable));
+  OP_REQUIRES_OK(ctx, cache->Compile(options, function_, num_constant_args_, {},
+                                     ctx, &kernel, &executable));
 
   VLOG(1) << "Executing XLA Computation...";
 
@@ -210,7 +229,7 @@ void XlaLocalLaunchOp::Compute(OpKernelContext* ctx) {
 
   std::unique_ptr<xla::ShapedBuffer> output;
   bool output_is_tuple;
-  if (!kernel->computation.IsNull()) {
+  if (!kernel->computation->IsNull()) {
     // Build xla::ShapedBuffers that point directly to the Tensor buffers.
     std::vector<std::unique_ptr<xla::ShapedBuffer>> arg_buffers;
     arg_buffers.reserve(kernel->xla_input_shapes.size() + 1);

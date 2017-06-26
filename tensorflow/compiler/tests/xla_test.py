@@ -54,16 +54,20 @@ class XLATestCase(test.TestCase):
     self.device = FLAGS.test_device
     self.has_custom_call = (self.device == 'XLA_CPU')
     self.all_tf_types = [
-        dtypes.DType(types_pb2.DataType.Value(name))
+        dtypes.as_dtype(types_pb2.DataType.Value(name))
         for name in FLAGS.types.split(',')
     ]
+    self.int_tf_types = [
+        dtype for dtype in self.all_tf_types if dtype.is_integer
+    ]
+    self.float_tf_types = [
+        dtype for dtype in self.all_tf_types if dtype.is_floating
+    ]
+    self.numeric_tf_types = self.int_tf_types + self.float_tf_types
+
     self.all_types = [dtype.as_numpy_dtype for dtype in self.all_tf_types]
-    self.int_types = [
-        dtype.as_numpy_dtype for dtype in self.all_tf_types if dtype.is_integer
-    ]
-    self.float_types = [
-        dtype.as_numpy_dtype for dtype in self.all_tf_types if dtype.is_floating
-    ]
+    self.int_types = [dtype.as_numpy_dtype for dtype in self.int_tf_types]
+    self.float_types = [dtype.as_numpy_dtype for dtype in self.float_tf_types]
     self.numeric_types = self.int_types + self.float_types
 
     # Parse the manifest file, if any, into a regex identifying tests to
@@ -119,7 +123,11 @@ class XLATestCase(test.TestCase):
       yield
 
 
-def Benchmark(tf_bench, builder_fn, use_xla_jit, device):
+def Benchmark(tf_bench,
+              builder_fn,
+              use_xla_jit,
+              device,
+              separate_compiled_gradients=False):
   """Build a graph and run benchmarks against it, with or without XLA.
 
   Args:
@@ -129,6 +137,14 @@ def Benchmark(tf_bench, builder_fn, use_xla_jit, device):
         is a list of tensors to fetch as output.
     use_xla_jit: If true compile with the XLA JIT, otherwise use regular TF.
     device: The tensorflow device to run on, e.g. "cpu", "gpu".
+    separate_compiled_gradients: If true put each gradient subgraph into a
+      separate compilation scope. This gives fine-grained control over which
+      portions of the graph will be compiled as a single unit. Compiling
+      gradients separately may yield better performance for some graphs.
+      The scope is named based on the scope of the forward computation as well
+      as the name of the gradients. As a result, the gradients will be compiled
+      in a scope that is separate from both the forward computation, and from
+      other gradients.
   """
 
   with ops.Graph().as_default():
@@ -137,7 +153,9 @@ def Benchmark(tf_bench, builder_fn, use_xla_jit, device):
     with ops.device(device):
       fetches = []
       jit_scope = jit.experimental_jit_scope
-      with jit_scope(compile_ops=use_xla_jit):
+      with jit_scope(
+          compile_ops=use_xla_jit,
+          separate_compiled_gradients=separate_compiled_gradients):
         name, fetches = builder_fn()
 
       # We only want to benchmark the operations themselves, and not the data

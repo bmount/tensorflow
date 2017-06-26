@@ -25,6 +25,7 @@ typedef std::vector<std::tuple<string, Status>> ExpectedCalls;
 
 ExpectedCalls CreateRetriableErrors(const string& method, int n) {
   ExpectedCalls expected_calls;
+  expected_calls.reserve(n);
   for (int i = 0; i < n; i++) {
     expected_calls.emplace_back(std::make_tuple(
         method, errors::Unavailable(strings::StrCat("Retriable error #", i))));
@@ -35,7 +36,7 @@ ExpectedCalls CreateRetriableErrors(const string& method, int n) {
 // A class to manage call expectations on mock implementations.
 class MockCallSequence {
  public:
-  MockCallSequence(const ExpectedCalls& calls) : calls_(calls) {}
+  explicit MockCallSequence(const ExpectedCalls& calls) : calls_(calls) {}
 
   ~MockCallSequence() {
     EXPECT_TRUE(calls_.empty())
@@ -57,7 +58,7 @@ class MockCallSequence {
 
 class MockRandomAccessFile : public RandomAccessFile {
  public:
-  MockRandomAccessFile(const ExpectedCalls& calls) : calls_(calls) {}
+  explicit MockRandomAccessFile(const ExpectedCalls& calls) : calls_(calls) {}
   Status Read(uint64 offset, size_t n, StringPiece* result,
               char* scratch) const override {
     return calls_.ConsumeNextCall("Read");
@@ -69,7 +70,7 @@ class MockRandomAccessFile : public RandomAccessFile {
 
 class MockWritableFile : public WritableFile {
  public:
-  MockWritableFile(const ExpectedCalls& calls) : calls_(calls) {}
+  explicit MockWritableFile(const ExpectedCalls& calls) : calls_(calls) {}
   Status Append(const StringPiece& data) override {
     return calls_.ConsumeNextCall("Append");
   }
@@ -83,7 +84,7 @@ class MockWritableFile : public WritableFile {
 
 class MockFileSystem : public FileSystem {
  public:
-  MockFileSystem(const ExpectedCalls& calls) : calls_(calls) {}
+  explicit MockFileSystem(const ExpectedCalls& calls) : calls_(calls) {}
 
   Status NewRandomAccessFile(
       const string& fname, std::unique_ptr<RandomAccessFile>* result) override {
@@ -234,8 +235,10 @@ TEST(RetryingFileSystemTest, NewRandomAccessFile_AllRetriesFailed) {
   // Use it and check the results.
   StringPiece result;
   char scratch[10];
-  EXPECT_EQ("Retriable error #10",
-            random_access_file->Read(0, 10, &result, scratch).error_message());
+  const auto& status = random_access_file->Read(0, 10, &result, scratch);
+  EXPECT_TRUE(
+      StringPiece(status.error_message()).contains("Retriable error #10"))
+      << status;
 }
 
 TEST(RetryingFileSystemTest, NewRandomAccessFile_NoRetriesForSomeErrors) {
@@ -386,7 +389,10 @@ TEST(RetryingFileSystemTest, NewWritableFile_AllRetriesFailed) {
   TF_EXPECT_OK(fs.NewWritableFile("filename.txt", &writable_file));
 
   // Use it and check the results.
-  EXPECT_EQ("Retriable error #10", writable_file->Sync().error_message());
+  const auto& status = writable_file->Sync();
+  EXPECT_TRUE(
+      StringPiece(status.error_message()).contains("Retriable error #10"))
+      << status;
 }
 
 TEST(RetryingFileSystemTest,
@@ -411,9 +417,11 @@ TEST(RetryingFileSystemTest, NewReadOnlyMemoryRegionFromFile_AllRetriesFailed) {
   RetryingFileSystem fs(std::move(base_fs), 0);
 
   std::unique_ptr<ReadOnlyMemoryRegion> result;
-  EXPECT_EQ("Retriable error #10",
-            fs.NewReadOnlyMemoryRegionFromFile("filename.txt", &result)
-                .error_message());
+  const auto& status =
+      fs.NewReadOnlyMemoryRegionFromFile("filename.txt", &result);
+  EXPECT_TRUE(
+      StringPiece(status.error_message()).contains("Retriable error #10"))
+      << status;
 }
 
 TEST(RetryingFileSystemTest, GetChildren_SuccessWith2ndTry) {
@@ -436,8 +444,10 @@ TEST(RetryingFileSystemTest, GetChildren_AllRetriesFailed) {
   RetryingFileSystem fs(std::move(base_fs), 0);
 
   std::vector<string> result;
-  EXPECT_EQ("Retriable error #10",
-            fs.GetChildren("gs://path", &result).error_message());
+  const auto& status = fs.GetChildren("gs://path", &result);
+  EXPECT_TRUE(
+      StringPiece(status.error_message()).contains("Retriable error #10"))
+      << status;
 }
 
 TEST(RetryingFileSystemTest, GetMatchingPaths_SuccessWith2ndTry) {
@@ -461,8 +471,10 @@ TEST(RetryingFileSystemTest, GetMatchingPaths_AllRetriesFailed) {
   RetryingFileSystem fs(std::move(base_fs), 0);
 
   std::vector<string> result;
-  EXPECT_EQ("Retriable error #10",
-            fs.GetMatchingPaths("gs://path/dir", &result).error_message());
+  const auto& status = fs.GetMatchingPaths("gs://path/dir", &result);
+  EXPECT_TRUE(
+      StringPiece(status.error_message()).contains("Retriable error #10"))
+      << status;
 }
 
 TEST(RetryingFileSystemTest, DeleteFile_SuccessWith2ndTry) {
@@ -484,8 +496,10 @@ TEST(RetryingFileSystemTest, DeleteFile_AllRetriesFailed) {
   RetryingFileSystem fs(std::move(base_fs), 0);
 
   std::vector<string> result;
-  EXPECT_EQ("Retriable error #10",
-            fs.DeleteFile("gs://path/file.txt").error_message());
+  const auto& status = fs.DeleteFile("gs://path/file.txt");
+  EXPECT_TRUE(
+      StringPiece(status.error_message()).contains("Retriable error #10"))
+      << status;
 }
 
 TEST(RetryingFileSystemTest, CreateDir_SuccessWith2ndTry) {
@@ -507,8 +521,10 @@ TEST(RetryingFileSystemTest, CreateDir_AllRetriesFailed) {
   RetryingFileSystem fs(std::move(base_fs), 0);
 
   std::vector<string> result;
-  EXPECT_EQ("Retriable error #10",
-            fs.CreateDir("gs://path/newdir").error_message());
+  const auto& status = fs.CreateDir("gs://path/newdir");
+  EXPECT_TRUE(
+      StringPiece(status.error_message()).contains("Retriable error #10"))
+      << status;
 }
 
 TEST(RetryingFileSystemTest, DeleteDir_SuccessWith2ndTry) {
@@ -530,8 +546,10 @@ TEST(RetryingFileSystemTest, DeleteDir_AllRetriesFailed) {
   RetryingFileSystem fs(std::move(base_fs), 0);
 
   std::vector<string> result;
-  EXPECT_EQ("Retriable error #10",
-            fs.DeleteDir("gs://path/dir").error_message());
+  const auto& status = fs.DeleteDir("gs://path/dir");
+  EXPECT_TRUE(
+      StringPiece(status.error_message()).contains("Retriable error #10"))
+      << status;
 }
 
 TEST(RetryingFileSystemTest, GetFileSize_SuccessWith2ndTry) {
@@ -554,8 +572,10 @@ TEST(RetryingFileSystemTest, GetFileSize_AllRetriesFailed) {
   RetryingFileSystem fs(std::move(base_fs), 0);
 
   uint64 size;
-  EXPECT_EQ("Retriable error #10",
-            fs.GetFileSize("gs://path/file.txt", &size).error_message());
+  const auto& status = fs.GetFileSize("gs://path/file.txt", &size);
+  EXPECT_TRUE(
+      StringPiece(status.error_message()).contains("Retriable error #10"))
+      << status;
 }
 
 TEST(RetryingFileSystemTest, RenameFile_SuccessWith2ndTry) {
@@ -575,8 +595,10 @@ TEST(RetryingFileSystemTest, RenameFile_AllRetriesFailed) {
       new MockFileSystem(expected_fs_calls));
   RetryingFileSystem fs(std::move(base_fs), 0);
 
-  EXPECT_EQ("Retriable error #10",
-            fs.RenameFile("old_name", "new_name").error_message());
+  const auto& status = fs.RenameFile("old_name", "new_name");
+  EXPECT_TRUE(
+      StringPiece(status.error_message()).contains("Retriable error #10"))
+      << status;
 }
 
 TEST(RetryingFileSystemTest, Stat_SuccessWith2ndTry) {
@@ -598,7 +620,10 @@ TEST(RetryingFileSystemTest, Stat_AllRetriesFailed) {
   RetryingFileSystem fs(std::move(base_fs), 0);
 
   FileStatistics stat;
-  EXPECT_EQ("Retriable error #10", fs.Stat("file_name", &stat).error_message());
+  const auto& status = fs.Stat("file_name", &stat);
+  EXPECT_TRUE(
+      StringPiece(status.error_message()).contains("Retriable error #10"))
+      << status;
 }
 
 TEST(RetryingFileSystemTest, FileExists_AllRetriesFailed) {
@@ -607,7 +632,10 @@ TEST(RetryingFileSystemTest, FileExists_AllRetriesFailed) {
       new MockFileSystem(expected_fs_calls));
   RetryingFileSystem fs(std::move(base_fs), 0);
 
-  EXPECT_EQ("Retriable error #10", fs.FileExists("file_name").error_message());
+  const auto& status = fs.FileExists("file_name");
+  EXPECT_TRUE(
+      StringPiece(status.error_message()).contains("Retriable error #10"))
+      << status;
 }
 
 TEST(RetryingFileSystemTest, FileExists_SuccessWith2ndTry) {
@@ -639,8 +667,10 @@ TEST(RetryingFileSystemTest, IsDirectory_AllRetriesFailed) {
       new MockFileSystem(expected_fs_calls));
   RetryingFileSystem fs(std::move(base_fs), 0);
 
-  EXPECT_EQ("Retriable error #10",
-            fs.IsDirectory("gs://path/dir").error_message());
+  const auto& status = fs.IsDirectory("gs://path/dir");
+  EXPECT_TRUE(
+      StringPiece(status.error_message()).contains("Retriable error #10"))
+      << status;
 }
 
 TEST(RetryingFileSystemTest, DeleteRecursively_SuccessWith2ndTry) {
@@ -665,10 +695,11 @@ TEST(RetryingFileSystemTest, DeleteRecursively_AllRetriesFailed) {
   RetryingFileSystem fs(std::move(base_fs), 0);
   int64 undeleted_files, undeleted_dirs;
 
-  EXPECT_EQ(
-      "Retriable error #10",
-      fs.DeleteRecursively("gs://path/dir", &undeleted_files, &undeleted_dirs)
-          .error_message());
+  const auto& status =
+      fs.DeleteRecursively("gs://path/dir", &undeleted_files, &undeleted_dirs);
+  EXPECT_TRUE(
+      StringPiece(status.error_message()).contains("Retriable error #10"))
+      << status;
 }
 
 }  // namespace

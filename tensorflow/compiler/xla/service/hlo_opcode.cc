@@ -24,6 +24,8 @@ string HloOpcodeString(HloOpcode opcode) {
       return "abs";
     case HloOpcode::kAdd:
       return "add";
+    case HloOpcode::kBatchNormTraining:
+      return "batch-norm-training";
     case HloOpcode::kBitcast:
       return "bitcast";
     case HloOpcode::kBroadcast:
@@ -40,6 +42,8 @@ string HloOpcodeString(HloOpcode opcode) {
       return "convert";
     case HloOpcode::kConvolution:
       return "convolution";
+    case HloOpcode::kCos:
+      return "cosine";
     case HloOpcode::kCrossReplicaSum:
       return "cross-replica-sum";
     case HloOpcode::kCustomCall:
@@ -112,6 +116,8 @@ string HloOpcodeString(HloOpcode opcode) {
       return "recv";
     case HloOpcode::kReduce:
       return "reduce";
+    case HloOpcode::kReducePrecision:
+      return "reduce-precision";
     case HloOpcode::kReduceWindow:
       return "reduce-window";
     case HloOpcode::kRemainder:
@@ -159,6 +165,19 @@ bool HloOpcodeIsComparison(HloOpcode opcode) {
     case HloOpcode::kLt:
     case HloOpcode::kEq:
     case HloOpcode::kNe:
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool HloOpcodeIsVariadic(HloOpcode opcode) {
+  switch (opcode) {
+    case HloOpcode::kCall:
+    case HloOpcode::kConcatenate:
+    case HloOpcode::kFusion:
+    case HloOpcode::kMap:
+    case HloOpcode::kTuple:
       return true;
     default:
       return false;

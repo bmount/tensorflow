@@ -92,12 +92,12 @@ two following snippets of code are equivalent:
 # Using `Session.run()`.
 sess = tf.Session()
 c = tf.constant(5.0)
-print sess.run(c)
+print(sess.run(c))
 
 # Using `Tensor.eval()`.
 c = tf.constant(5.0)
 with tf.Session():
-  print c.eval()
+  print(c.eval())
 ```
 
 In the second example, the session acts as a
@@ -189,7 +189,7 @@ operation for that variable in a session. It is destroyed when that
 
 Variables allow concurrent read and write operations. The value read from a
 variable may change if it is concurrently updated. By default, concurrent
-assigment operations to a variable are allowed to run with no mutual exclusion.
+assignment operations to a variable are allowed to run with no mutual exclusion.
 To acquire a lock when assigning to a variable, pass `use_locking=True` to
 @{tf.Variable.assign}.
 

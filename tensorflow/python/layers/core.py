@@ -38,7 +38,7 @@ from tensorflow.python.layers import base
 from tensorflow.python.layers import utils
 
 
-class Dense(base._Layer):  # pylint: disable=protected-access
+class Dense(base.Layer):
   """Densely-connected layer class.
 
   This layer implements the operation:
@@ -101,56 +101,46 @@ class Dense(base._Layer):  # pylint: disable=protected-access
     self.kernel_regularizer = kernel_regularizer
     self.bias_regularizer = bias_regularizer
     self.activity_regularizer = activity_regularizer
+    self.input_spec = base.InputSpec(min_ndim=2)
 
   def build(self, input_shape):
     input_shape = tensor_shape.TensorShape(input_shape)
-    if input_shape.ndims is None:
-      raise ValueError('Inputs to `Dense` should have known rank.')
-    if len(input_shape) < 2:
-      raise ValueError('Inputs to `Dense` should have rank >= 2.')
     if input_shape[-1].value is None:
       raise ValueError('The last dimension of the inputs to `Dense` '
                        'should be defined. Found `None`.')
-    # Note that we set `trainable=True` because this is a trainable
-    # weight of the layer. If the layer is not trainable
-    # (self.trainable = False), the variable will not be added to
-    # tf.trainable_variables(), and self.trainable_weights will be empty.
-    self.kernel = vs.get_variable('kernel',
-                                  shape=[input_shape[-1].value, self.units],
-                                  initializer=self.kernel_initializer,
-                                  regularizer=self.kernel_regularizer,
-                                  dtype=self.dtype,
-                                  trainable=True)
+    self.input_spec = base.InputSpec(min_ndim=2,
+                                     axes={-1: input_shape[-1].value})
+    self.kernel = self.add_variable('kernel',
+                                    shape=[input_shape[-1].value, self.units],
+                                    initializer=self.kernel_initializer,
+                                    regularizer=self.kernel_regularizer,
+                                    dtype=self.dtype,
+                                    trainable=True)
     if self.use_bias:
-      self.bias = vs.get_variable('bias',
-                                  shape=[self.units,],
-                                  initializer=self.bias_initializer,
-                                  regularizer=self.bias_regularizer,
-                                  dtype=self.dtype,
-                                  trainable=True)
+      self.bias = self.add_variable('bias',
+                                    shape=[self.units,],
+                                    initializer=self.bias_initializer,
+                                    regularizer=self.bias_regularizer,
+                                    dtype=self.dtype,
+                                    trainable=True)
     else:
       self.bias = None
+    self.built = True
 
   def call(self, inputs):
+    inputs = ops.convert_to_tensor(inputs, dtype=self.dtype)
     shape = inputs.get_shape().as_list()
-    input_dim = shape[-1]
     output_shape = shape[:-1] + [self.units]
     if len(output_shape) > 2:
-      # Reshape the input to 2D.
-      output_shape_tensors = array_ops.unstack(array_ops.shape(inputs))
-      output_shape_tensors[-1] = self.units
-      output_shape_tensor = array_ops.stack(output_shape_tensors)
-      inputs = array_ops.reshape(inputs, [-1, input_dim])
-
-    outputs = standard_ops.matmul(inputs, self.kernel)
+      # Broadcasting is required for the inputs.
+      outputs = standard_ops.tensordot(inputs, self.kernel, [[len(shape) - 1],
+                                                             [0]])
+      # Reshape the output back to the original ndim of the input.
+      outputs.set_shape(output_shape)
+    else:
+      outputs = standard_ops.matmul(inputs, self.kernel)
     if self.use_bias:
       outputs = nn.bias_add(outputs, self.bias)
-
-    if len(output_shape) > 2:
-      # Reshape the output back to the original ndim of the input.
-      outputs = array_ops.reshape(outputs, output_shape_tensor)
-      outputs.set_shape(output_shape)
-
     if self.activation is not None:
       return self.activation(outputs)  # pylint: disable=not-callable
     return outputs
@@ -225,7 +215,7 @@ def dense(
   return layer.apply(inputs)
 
 
-class Dropout(base._Layer):  # pylint: disable=protected-access
+class Dropout(base.Layer):
   """Applies Dropout to the input.
 
   Dropout consists in randomly setting a fraction `rate` of input units to 0
@@ -258,10 +248,16 @@ class Dropout(base._Layer):  # pylint: disable=protected-access
     self.noise_shape = noise_shape
     self.seed = seed
 
+  def _get_noise_shape(self, _):
+    # Subclasses of `Dropout` may implement `_get_noise_shape(self, inputs)`,
+    # which will override `self.noise_shape`, and allows for custom noise
+    # shapes with dynamically sized inputs.
+    return self.noise_shape
+
   def call(self, inputs, training=False):
     def dropped_inputs():
       return nn.dropout(inputs, 1  - self.rate,
-                        noise_shape=self.noise_shape,
+                        noise_shape=self._get_noise_shape(inputs),
                         seed=self.seed)
     return utils.smart_cond(training,
                             dropped_inputs,

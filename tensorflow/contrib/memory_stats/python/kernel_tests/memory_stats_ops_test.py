@@ -29,6 +29,16 @@ from tensorflow.python.platform import test
 
 class MemoryStatsOpsTest(test_util.TensorFlowTestCase):
 
+  def testBytesLimit(self):
+    # AllocatorStats.bytes_limit is set to zero for CPU allocators, so we skip
+    # the check.
+    if not test.is_gpu_available():
+      return
+
+    with self.test_session(use_gpu=True) as sess:
+      bytes_limit = sess.run(memory_stats_ops.BytesLimit())
+      self.assertLess(0, bytes_limit)
+
   # Tests the peak memory usage of the following computation.
   #   a   b
   #   | / |
@@ -39,7 +49,7 @@ class MemoryStatsOpsTest(test_util.TensorFlowTestCase):
   # The memory for matrix "a" can be reused for matrix "d". Therefore, this
   # computation needs space for only three matrix plus some small overhead.
   def testChainOfMatmul(self):
-    # MaxBytesInUse is registerd on GPU only. See kernels/memory_stats_ops.cc.
+    # MaxBytesInUse is registered on GPU only. See kernels/memory_stats_ops.cc.
     if not test.is_gpu_available():
       return
 

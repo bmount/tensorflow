@@ -26,10 +26,8 @@ import tensorflow as tf
 
 import ctypes
 import importlib
-import inspect
 import sys
 import traceback
-
 
 # TODO(drpng): write up instructions for editing this file in a doc and point to
 # the doc instead.
@@ -56,7 +54,9 @@ from tensorflow.core.framework.node_def_pb2 import *
 from tensorflow.core.framework.summary_pb2 import *
 from tensorflow.core.framework.attr_value_pb2 import *
 from tensorflow.core.protobuf.meta_graph_pb2 import TensorInfo
+from tensorflow.core.protobuf.meta_graph_pb2 import MetaGraphDef
 from tensorflow.core.protobuf.config_pb2 import *
+from tensorflow.core.protobuf.tensorflow_server_pb2 import *
 from tensorflow.core.util.event_pb2 import *
 
 # Framework
@@ -74,17 +74,19 @@ from tensorflow.python.ops.standard_ops import *
 # pylint: enable=wildcard-import
 
 # Bring in subpackages.
+from tensorflow.python.estimator import estimator_lib as estimator
+from tensorflow.python.feature_column import feature_column_lib as feature_column
 from tensorflow.python.layers import layers
+from tensorflow.python.ops import bitwise_ops as bitwise
+from tensorflow.python.ops import image_ops as image
 from tensorflow.python.ops import metrics
 from tensorflow.python.ops import nn
-from tensorflow.python.ops import sdca_ops as sdca
-from tensorflow.python.ops import image_ops as image
-from tensorflow.python.ops.losses import losses
 from tensorflow.python.ops import sets
-from tensorflow.python.saved_model import saved_model
-from tensorflow.python.util import compat
+from tensorflow.python.ops import spectral_ops as spectral
+from tensorflow.python.ops.losses import losses
 from tensorflow.python.user_ops import user_ops
 from tensorflow.python.util import compat
+from tensorflow.python.saved_model import saved_model
 from tensorflow.python.summary import summary
 
 # Import the names from python/training.py as train.Name.
@@ -131,6 +133,7 @@ from tensorflow.python.ops import tensor_array_ops
 _allowed_symbols = [
     'AttrValue',
     'ConfigProto',
+    'ClusterDef',
     'DeviceSpec',
     'Event',
     'GPUOptions',
@@ -141,6 +144,7 @@ _allowed_symbols = [
     'GraphOptions',
     'HistogramProto',
     'LogMessage',
+    'MetaGraphDef',
     'NameAttrList',
     'NodeDef',
     'OptimizerOptions',
@@ -167,7 +171,7 @@ _allowed_symbols.extend([
     'parse_single_sequence_example',
     'serialize_many_sparse',
     'serialize_sparse',
-    'sparse_matmul',   ## use tf.matmul instead.
+    'sparse_matmul',  ## use tf.matmul instead.
 ])
 
 # This is needed temporarily because we import it explicitly.
@@ -206,8 +210,11 @@ _allowed_symbols.extend([
 # Export modules and constants.
 _allowed_symbols.extend([
     'app',
+    'bitwise',
     'compat',
     'errors',
+    'estimator',
+    'feature_column',
     'flags',
     'gfile',
     'graph_util',
@@ -220,8 +227,8 @@ _allowed_symbols.extend([
     'python_io',
     'resource_loader',
     'saved_model',
-    'sdca',
     'sets',
+    'spectral',
     'summary',
     'sysconfig',
     'test',

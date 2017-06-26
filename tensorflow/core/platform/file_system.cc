@@ -37,7 +37,7 @@ constexpr int kNumThreads = 8;
 
 // Run a function in parallel using a ThreadPool, but skip the ThreadPool
 // on the iOS platform due to its problems with more than a few threads.
-void ForEach(int first, int last, std::function<void(int)> f) {
+void ForEach(int first, int last, const std::function<void(int)>& f) {
 #if TARGET_OS_IPHONE
   for (int i = first; i < last; i++) {
     f(i);
@@ -75,6 +75,22 @@ RandomAccessFile::~RandomAccessFile() {}
 WritableFile::~WritableFile() {}
 
 FileSystemRegistry::~FileSystemRegistry() {}
+
+bool FileSystem::FilesExist(const std::vector<string>& files,
+                            std::vector<Status>* status) {
+  bool result = true;
+  for (const auto& file : files) {
+    Status s = FileExists(file);
+    result &= s.ok();
+    if (status != nullptr) {
+      status->push_back(s);
+    } else if (!result) {
+      // Return early since there is no need to check other files.
+      return false;
+    }
+  }
+  return result;
+}
 
 Status FileSystem::GetMatchingPaths(const string& pattern,
                                     std::vector<string>* results) {

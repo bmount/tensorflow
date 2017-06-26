@@ -84,6 +84,10 @@ class UserComputation {
   StatusOr<ComputationDataHandle> AddUnaryInstruction(
       const UnaryOpRequest& unary_request);
 
+  // Enqueues a batch norm training instruction onto this user computation.
+  StatusOr<ComputationDataHandle> AddBatchNormTrainingInstruction(
+      const BatchNormTrainingRequest& batch_norm_training_request);
+
   // Enqueues a binary instruction onto this user computation.
   // Returns an error status if the operand indices are out of bounds.
   StatusOr<ComputationDataHandle> AddBinaryInstruction(
@@ -111,6 +115,10 @@ class UserComputation {
   StatusOr<ComputationDataHandle> AddMapInstruction(
       const MapRequest& map_request,
       const UserComputation& to_apply_computation);
+
+  // Enqueues a reduce-precision instruction onto this user computation.
+  StatusOr<ComputationDataHandle> AddReducePrecisionInstruction(
+      const ReducePrecisionRequest& reduce_precision_request);
 
   // Enqueues a convolution instruction onto this user computation.
   StatusOr<ComputationDataHandle> AddConvolveInstruction(
@@ -143,6 +151,10 @@ class UserComputation {
   // Enqueues a reshape instruction onto this user computation.
   StatusOr<ComputationDataHandle> AddReshapeInstruction(
       const ReshapeRequest& reshape_request);
+
+  // Enqueues a transpose instruction onto this user computation.
+  StatusOr<ComputationDataHandle> AddTransposeInstruction(
+      const TransposeRequest& transpose_request);
 
   // Enqueues a slice instruction onto this user computation.
   StatusOr<ComputationDataHandle> AddSliceInstruction(
@@ -235,6 +247,10 @@ class UserComputation {
 
   // Returns the output shape of the operation indicated by the given handle.
   StatusOr<Shape> GetShape(const ComputationDataHandle& handle);
+
+  // Sets metadata on the Hlo instruction referenced by the given handle.
+  Status SetOpMetadata(const ComputationDataHandle& handle,
+                       const OpMetadata& metadata);
 
   // Builds a HLO computation from the UserComputation. The parameter "resolver"
   // is a function which returns a pointer to the HloComputation corresponding

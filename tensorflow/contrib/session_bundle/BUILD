@@ -41,6 +41,16 @@ filegroup(
     ]),
 )
 
+# Transitive dependencies of this target will be included in the pip package.
+py_library(
+    name = "session_bundle_pip",
+    deps = [
+        ":bundle_shim_py",
+        ":exporter",
+        ":gc",
+    ],
+)
+
 py_library(
     name = "bundle_shim_py",
     srcs = ["bundle_shim.py"],
@@ -152,6 +162,7 @@ py_library(
 
 py_test(
     name = "gc_test",
+    size = "small",
     srcs = [
         "gc_test.py",
     ],
@@ -321,7 +332,6 @@ cc_test(
     deps = [
         ":manifest_proto_cc",
         ":signature",
-        ":test_util",
         "//tensorflow/core:core_cpu",
         "//tensorflow/core:framework",
         "//tensorflow/core:lib",
@@ -342,7 +352,6 @@ cc_library(
     deprecation = "Use SavedModel instead.",
     visibility = ["//visibility:private"],
     deps = [
-        "//tensorflow/core",
         "//tensorflow/core:lib",
         "//tensorflow/core:test",
     ],
@@ -384,7 +393,6 @@ cc_test(
     deps = [
         ":bundle_shim",
         ":test_util",
-        "//tensorflow/cc/saved_model:loader",
         "//tensorflow/cc/saved_model:signature_constants",
         "//tensorflow/cc/saved_model:tag_constants",
         "//tensorflow/core:core_cpu",

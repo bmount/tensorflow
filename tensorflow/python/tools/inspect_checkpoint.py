@@ -46,7 +46,7 @@ def print_tensors_in_checkpoint_file(file_name, tensor_name, all_tensors):
     reader = pywrap_tensorflow.NewCheckpointReader(file_name)
     if all_tensors:
       var_to_shape_map = reader.get_variable_to_shape_map()
-      for key in var_to_shape_map:
+      for key in sorted(var_to_shape_map):
         print("tensor_name: ", key)
         print(reader.get_tensor(key))
     elif not tensor_name:
@@ -59,6 +59,14 @@ def print_tensors_in_checkpoint_file(file_name, tensor_name, all_tensors):
     if "corrupted compressed block contents" in str(e):
       print("It's likely that your checkpoint file has been compressed "
             "with SNAPPY.")
+    if ("Data loss" in str(e) and
+        (any([e in file_name for e in [".index", ".meta", ".data"]]))):
+      proposed_file = ".".join(file_name.split(".")[0:-1])
+      v2_file_error_template = """
+It's likely that this is a V2 checkpoint and you need to provide the filename
+*prefix*.  Try removing the '.' and extension.  Try:
+inspect checkpoint --file_name = {}"""
+      print(v2_file_error_template.format(proposed_file))
 
 
 def parse_numpy_printoption(kv_str):
@@ -87,7 +95,7 @@ def parse_numpy_printoption(kv_str):
         "Setting '%s' from the command line is not supported." % k)
   try:
     v = (v_type(v_str) if v_type is not bool
-         else flags.BooleanParser().Parse(v_str))
+         else flags.BooleanParser().parse(v_str))
   except ValueError as e:
     raise argparse.ArgumentTypeError(e.message)
   np.set_printoptions(**{k: v})
