@@ -19,9 +19,7 @@ import android.content.res.AssetManager;
 import android.graphics.Bitmap;
 import android.os.Trace;
 import android.util.Log;
-import java.io.BufferedReader;
 import java.io.IOException;
-import java.io.InputStreamReader;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -85,20 +83,9 @@ public class TensorFlowImageClassifier implements Classifier {
     c.outputName = outputName;
 
     // Read the label names into memory.
-    // TODO(andrewharp): make this handle non-assets.
-    String actualFilename = labelFilename.split("file:///android_asset/")[1];
-    Log.i(TAG, "Reading labels from: " + actualFilename);
-    BufferedReader br = null;
-    try {
-      br = new BufferedReader(new InputStreamReader(assetManager.open(actualFilename)));
-      String line;
-      while ((line = br.readLine()) != null) {
-        c.labels.add(line);
-      }
-      br.close();
-    } catch (IOException e) {
-      throw new RuntimeException("Problem reading label file!" , e);
-    }
+
+    Log.i(TAG, "Reading labels from: " + labelFilename);
+    c.labels = (new LabelMap()).loadFromAssets(assetManager, labelFilename);
 
     c.inferenceInterface = new TensorFlowInferenceInterface(assetManager, modelFilename);
 

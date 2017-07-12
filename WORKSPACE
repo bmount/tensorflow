@@ -17,20 +17,6 @@ closure_repositories()
 load("//tensorflow:workspace.bzl", "tf_workspace")
 
 # Uncomment and update the paths in these entries to build the Android demo.
-android_sdk_repository(
-    name = "androidsdk",
-    api_level = 23,
-    build_tools_version = "23.0.1",
-    # Replace with path to Android SDK on your system
-    path = "/Users/bvm/Library/Android/sdk/",
-)
-
-android_ndk_repository(
-    name="androidndk",
-    path="/Users/bvm/Library/Android/sdk/ndk-bundle",
-    api_level=21,
-)
-
 #android_sdk_repository(
 #    name = "androidsdk",
 #    api_level = 23,

@@ -45,8 +45,7 @@ import org.tensorflow.demo.tracking.MultiBoxTracker;
 import org.tensorflow.demo.R;
 
 /**
- * An activity that uses a TensorFlowMultiBoxDetector and ObjectTracker to detect and then track
- * objects.
+ * An activity that uses a localizing model and ObjectTracker to detect and then track objects.
  */
 public class DetectorActivity extends CameraActivity implements OnImageAvailableListener {
   private static final Logger LOGGER = new Logger();
@@ -73,15 +72,32 @@ public class DetectorActivity extends CameraActivity implements OnImageAvailable
   private static final String YOLO_OUTPUT_NAMES = "output";
   private static final int YOLO_BLOCK_SIZE = 32;
 
-  // Default to the included multibox model.
+  // Configuration values for "Single Shot Multibox Detector (SSD) with MobileNet"
+  // Uses exported snapshots from Object Detection API model zoo. Downloads:
+  //  http://download.tensorflow.org/models/object_detection/ssd_mobilenet_v1_coco_11_06_2017.tar.gz
+  //  https://storage.googleapis.com/bmount/ssd-mobilenet-v1-coco/labels.txt
+  // The graph definition file and labels must be (manually) copied to <project root>/assets.
+  private static final String SSD_MODEL_FILE =
+          "file:///android_asset/ssd_mobilenet_v1_coco/frozen_inference_graph.pb";
+  private static final String SSD_LABEL_FILE =
+          "file:///android_asset/ssd_mobilenet_v1_coco/labels.txt";
+  private static final int SSD_INPUT_SIZE = 224;
+  private static final String SSD_INPUT_NAME = "image_tensor";
+  private static final String SSD_OUTPUT_TENSORS =
+          "detection_boxes,detection_scores,detection_classes,num_detections";
+
+  // Defaults to the included multibox model.
+  private static final boolean USE_SSD = true; // non-default
   private static final boolean USE_YOLO = false;
 
-  private static final int CROP_SIZE = USE_YOLO ? YOLO_INPUT_SIZE : MB_INPUT_SIZE;
+  private static final int CROP_SIZE = USE_SSD ? SSD_INPUT_SIZE :
+                                       USE_YOLO ? YOLO_INPUT_SIZE :
+                                       MB_INPUT_SIZE;
 
   // Minimum detection confidence to track a detection.
-  private static final float MINIMUM_CONFIDENCE = USE_YOLO ? 0.25f : 0.1f;
+  private static final float MINIMUM_CONFIDENCE = (USE_SSD || USE_YOLO) ? 0.25f : 0.1f;
 
-  private static final boolean MAINTAIN_ASPECT = USE_YOLO;
+  private static final boolean MAINTAIN_ASPECT = (USE_SSD || USE_YOLO);
 
   private static final Size DESIRED_PREVIEW_SIZE = new Size(640, 480);
 
@@ -126,7 +142,16 @@ public class DetectorActivity extends CameraActivity implements OnImageAvailable
 
     tracker = new MultiBoxTracker(this);
 
-    if (USE_YOLO) {
+    if (USE_SSD) {
+      detector =
+          TensorFlowSingleShotDetector.create(
+              getAssets(),
+              SSD_MODEL_FILE,
+              SSD_LABEL_FILE,
+              SSD_INPUT_SIZE,
+              SSD_INPUT_NAME,
+              SSD_OUTPUT_TENSORS);
+    } else if (USE_YOLO) {
       detector =
           TensorFlowYoloDetector.create(
               getAssets(),
