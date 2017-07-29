@@ -126,6 +126,9 @@ class AlgebraicSimplifierVisitor : public DfsHloVisitorWithDefault {
       HloInstruction* concatenate,
       tensorflow::gtl::ArraySlice<HloInstruction*> operands) override;
 
+  Status HandleConstant(HloInstruction* constant,
+                        const Literal& literal) override;
+
   Status HandleCopy(HloInstruction* copy) override;
 
   Status HandleConvert(HloInstruction* convert) override;
@@ -407,6 +410,32 @@ Status AlgebraicSimplifierVisitor::HandleConcatenate(
             concatenate->shape(), operands[operand_to_pad],
             operands[pad_value_operand]->mutable_operand(0), padding_config));
     return ReplaceInstruction(concatenate, pad);
+  }
+  return Status::OK();
+}
+
+static HloInstruction* BuildTupleConstant(HloComputation* computation,
+                                          const Literal& literal) {
+  if (ShapeUtil::IsTuple(literal.shape())) {
+    std::vector<HloInstruction*> elems;
+    elems.reserve(ShapeUtil::TupleElementCount(literal.shape()));
+    for (const Literal& child : literal.tuple_literals()) {
+      elems.push_back(BuildTupleConstant(computation, child));
+    }
+    return computation->AddInstruction(HloInstruction::CreateTuple(elems));
+  } else {
+    return computation->AddInstruction(
+        HloInstruction::CreateConstant(MakeUnique<Literal>(literal)));
+  }
+}
+
+Status AlgebraicSimplifierVisitor::HandleConstant(HloInstruction* constant,
+                                                  const Literal& literal) {
+  // Tuple constants aren't directly supported by any backend. Expand them into
+  // explicit Tuple instructions.
+  if (ShapeUtil::IsTuple(constant->shape())) {
+    return ReplaceInstruction(constant,
+                              BuildTupleConstant(computation_, literal));
   }
   return Status::OK();
 }
@@ -1026,6 +1055,9 @@ StatusOr<bool> AlgebraicSimplifierVisitor::
     TryToSinkReshapeOrBroadcastAfterOpWithUniqueNonScalarOperand(
         HloInstruction* reshape_or_broadcast) {
   bool changed = false;
+  if (ShapeUtil::IsScalar(reshape_or_broadcast->shape())) {
+    return false;
+  }
   HloInstruction* operand = reshape_or_broadcast->mutable_operand(0);
   for (HloInstruction* user : reshape_or_broadcast->users()) {
     if (user->user_count() == 0 && user != computation_->root_instruction()) {
@@ -1456,9 +1488,9 @@ Status AlgebraicSimplifierVisitor::HandleConvolution(
   // We cannot insert bitcasts if the layouts will not be compatible.
   // TODO(b/33178038): Consider inserting a transpose if a bitcast would be
   // invalid.
-  if (!valid_bitcast_callback_(lhs->shape(), input_shape) ||
-      !valid_bitcast_callback_(rhs->shape(), new_filter_shape) ||
-      !valid_bitcast_callback_(dot_output_shape, convolution_shape)) {
+  if (!valid_bitcast_callback_(input_shape, lhs->shape()) ||
+      !valid_bitcast_callback_(new_filter_shape, rhs->shape()) ||
+      !valid_bitcast_callback_(convolution_shape, dot_output_shape)) {
     return Status::OK();
   }
 
@@ -1554,6 +1586,9 @@ StatusOr<bool> AlgebraicSimplifier::Run(HloModule* module) {
   // module, invalidating iteration.
   std::vector<HloComputation*> computations;
   for (auto& comp : module->computations()) {
+    if (comp->IsFusionComputation()) {
+      continue;
+    }
     computations.push_back(comp.get());
   }
   for (auto& comp : computations) {
