@@ -64,6 +64,8 @@ HloOpcode UnaryOperationToHloOpcode(UnaryOperation unop) {
       return HloOpcode::kNegate;
     case UNOP_SIGN:
       return HloOpcode::kSign;
+    case UNOP_SIN:
+      return HloOpcode::kSin;
     case UNOP_SORT:
       return HloOpcode::kSort;
     case UNOP_TANH:
@@ -789,7 +791,7 @@ StatusOr<ComputationDataHandle> UserComputation::AddSliceInstruction(
       ShapeInference::InferSliceShape(
           operand->output_shape(), AsInt64Slice(slice_request.start_indices()),
           AsInt64Slice(slice_request.limit_indices()),
-          AsInt64Slice(slice_request.stride())));
+          AsInt64Slice(slice_request.strides())));
 
   ComputationDataHandle handle = CreateComputationDataHandle();
 
@@ -1010,9 +1012,6 @@ StatusOr<ComputationDataHandle> UserComputation::AddInfeedInstruction(
   tensorflow::mutex_lock lock(mutex_);
 
   const Shape& shape = infeed_request.shape();
-  if (ShapeUtil::IsNestedTuple(shape)) {
-    return InvalidArgument("Infeed does not support nested tuple shapes");
-  }
   if (!LayoutUtil::HasLayout(shape)) {
     return InvalidArgument("Given shape to Infeed must have a layout");
   }
@@ -1036,9 +1035,6 @@ Status UserComputation::AddOutfeedInstruction(
   tensorflow::mutex_lock lock(mutex_);
 
   const Shape& shape = outfeed_request.shape();
-  if (ShapeUtil::IsNestedTuple(shape)) {
-    return InvalidArgument("Outfeed does not support nested tuple shapes");
-  }
   if (!LayoutUtil::HasLayout(shape)) {
     return InvalidArgument("Given shape to Outfeed must have a layout");
   }
@@ -1682,6 +1678,23 @@ void ConstantVisitor(const SessionComputation& session_computation,
       break;
     }
 
+    case OpRequest::kBatchNormGradRequest: {
+      const BatchNormGradRequest& batch_norm_grad_request =
+          request.request().batch_norm_grad_request();
+      ConstantVisitor(session_computation, batch_norm_grad_request.operand(),
+                      visited, is_constant);
+      ConstantVisitor(session_computation, batch_norm_grad_request.scale(),
+                      visited, is_constant);
+      ConstantVisitor(session_computation, batch_norm_grad_request.mean(),
+                      visited, is_constant);
+      ConstantVisitor(session_computation, batch_norm_grad_request.variance(),
+                      visited, is_constant);
+      ConstantVisitor(session_computation,
+                      batch_norm_grad_request.grad_output(), visited,
+                      is_constant);
+      break;
+    }
+
     case OpRequest::kBinaryOpRequest: {
       const BinaryOpRequest& binary_op_request =
           request.request().binary_op_request();
@@ -2106,6 +2119,18 @@ static void ForEachOperand(
       break;
     }
 
+    case OpRequest::kBatchNormGradRequest: {
+      const BatchNormGradRequest& batch_norm_grad_request =
+          request.request().batch_norm_grad_request();
+
+      apply(batch_norm_grad_request.operand());
+      apply(batch_norm_grad_request.scale());
+      apply(batch_norm_grad_request.mean());
+      apply(batch_norm_grad_request.variance());
+      apply(batch_norm_grad_request.grad_output());
+      break;
+    }
+
     case OpRequest::kCrossReplicaSumRequest: {
       const CrossReplicaSumRequest& cross_replica_sum_request =
           request.request().cross_replica_sum_request();
@@ -2445,7 +2470,7 @@ void ComputationLowerer::Visit(
           request.output_shape(), operand,
           AsInt64Slice(slice_request.start_indices()),
           AsInt64Slice(slice_request.limit_indices()),
-          AsInt64Slice(slice_request.stride())));
+          AsInt64Slice(slice_request.strides())));
       break;
     }
 
@@ -2619,6 +2644,27 @@ void ComputationLowerer::Visit(
           request.output_shape(), operand, scale, offset,
           batch_norm_training_request.epsilon(),
           batch_norm_training_request.feature_index()));
+      break;
+    }
+
+    case OpRequest::kBatchNormGradRequest: {
+      const BatchNormGradRequest& batch_norm_grad_request =
+          request.request().batch_norm_grad_request();
+
+      HloInstruction* operand =
+          lookup_instruction(batch_norm_grad_request.operand());
+      HloInstruction* scale =
+          lookup_instruction(batch_norm_grad_request.scale());
+      HloInstruction* mean = lookup_instruction(batch_norm_grad_request.mean());
+      HloInstruction* variance =
+          lookup_instruction(batch_norm_grad_request.variance());
+      HloInstruction* grad_output =
+          lookup_instruction(batch_norm_grad_request.grad_output());
+
+      hlo_instruction = add_instruction(HloInstruction::CreateBatchNormGrad(
+          request.output_shape(), operand, scale, mean, variance, grad_output,
+          batch_norm_grad_request.epsilon(),
+          batch_norm_grad_request.feature_index()));
       break;
     }
 
@@ -2835,7 +2881,8 @@ void ComputationLowerer::Visit(
         lhs = (lhs == operand_to_broadcast) ? broadcasted_operand : lhs;
         rhs = (rhs == operand_to_broadcast) ? broadcasted_operand : rhs;
       }
-      if (debug_options_.xla_eliminate_hlo_implicit_broadcast()) {
+      if (debug_options_.xla_eliminate_hlo_implicit_broadcast() &&
+          binary_op_request.binop() != BINOP_DOT) {
         if (!ShapeUtil::SameDimensions(request.output_shape(), lhs->shape())) {
           // lhs side is being implicitly broadcast. Change to explicit.
           lhs =

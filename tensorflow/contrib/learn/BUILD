@@ -31,6 +31,7 @@ py_library(
         "//tensorflow/contrib/linear_optimizer:sdca_ops_py",
         "//tensorflow/contrib/lookup:lookup_py",
         "//tensorflow/contrib/losses:losses_py",
+        "//tensorflow/contrib/meta_graph_transform",
         "//tensorflow/contrib/metrics:metrics_py",
         "//tensorflow/contrib/rnn:rnn_py",
         "//tensorflow/contrib/session_bundle:exporter",
@@ -587,7 +588,9 @@ py_test(
     name = "head_test",
     size = "medium",
     srcs = ["python/learn/estimators/head_test.py"],
+    shard_count = 4,
     srcs_version = "PY2AND3",
+    tags = ["noasan"],  # times out b/63678675
     deps = [
         ":learn",
         "//tensorflow/core:protos_all_py",

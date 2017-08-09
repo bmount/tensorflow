@@ -44,30 +44,6 @@ inline bool CopyHostToDevice(OpKernelContext* context, void* dst,
   return stream->ThenMemcpy(&wrapped_dst, src, bytes).ok();
 }
 
-// Type traits to get CUDA complex types from std::complex<>.
-template <typename T>
-struct CUDAComplexT {
-  typedef T type;
-};
-template <>
-struct CUDAComplexT<std::complex<float>> {
-  typedef cuComplex type;
-};
-template <>
-struct CUDAComplexT<std::complex<double>> {
-  typedef cuDoubleComplex type;
-};
-// Converts pointers of std::complex<> to pointers of
-// cuComplex/cuDoubleComplex. No type conversion for non-complex types.
-template <typename T>
-inline const typename CUDAComplexT<T>::type* CUDAComplex(const T* p) {
-  return reinterpret_cast<const typename CUDAComplexT<T>::type*>(p);
-}
-template <typename T>
-inline typename CUDAComplexT<T>::type* CUDAComplex(T* p) {
-  return reinterpret_cast<typename CUDAComplexT<T>::type*>(p);
-}
-
 // A set of initialized handles to the underlying Cuda libraries used by
 // CudaSolver. We maintain one such set of handles per unique stream.
 struct CudaSolverHandles {
@@ -251,6 +227,37 @@ static inline Status PotrfImpl(BufSizeFnT bufsize, SolverFnT solver,
   }
 
 TF_CALL_LAPACK_TYPES(POTRF_INSTANCE);
+
+template <typename Scalar, typename SolverFnT>
+static inline Status GeamImpl(SolverFnT solver, cublasHandle_t cublas_handle,
+                              cublasOperation_t transa,
+                              cublasOperation_t transb, int m, int n,
+                              const Scalar* alpha, /* host or device pointer */
+                              const Scalar* A, int lda,
+                              const Scalar* beta, /* host or device pointer */
+                              const Scalar* B, int ldb, Scalar* C, int ldc) {
+  using CudaScalar = typename CUDAComplexT<Scalar>::type;
+  TF_RETURN_IF_CUBLAS_ERROR(
+      solver(cublas_handle, transa, transb, m, n, (const CudaScalar*)alpha,
+             (const CudaScalar*)A, lda, (const CudaScalar*)beta,
+             (const CudaScalar*)B, ldb, (CudaScalar*)C, ldc));
+  return Status::OK();
+}
+
+#define GEAM_INSTANCE(Scalar, lapack_prefix)                              \
+  template <>                                                             \
+  Status CudaSolver::Geam<Scalar>(                                        \
+      cublasOperation_t transa, cublasOperation_t transb, int m, int n,   \
+      const Scalar* alpha, /* host or device pointer */                   \
+      const Scalar* A, int lda,                                           \
+      const Scalar* beta, /* host or device pointer */                    \
+      const Scalar* B, int ldb, Scalar* C, int ldc) const {               \
+    return GeamImpl(BLAS_SOLVER_FN(geam, lapack_prefix), cublas_handle_,  \
+                    transa, transb, m, n, alpha, A, lda, beta, B, ldb, C, \
+                    ldc);                                                 \
+  }
+
+TF_CALL_LAPACK_TYPES(GEAM_INSTANCE);
 
 //=============================================================================
 // Wrappers of cuBlas computational methods begin here.
