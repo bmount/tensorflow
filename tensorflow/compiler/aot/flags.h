@@ -25,18 +25,25 @@ namespace tensorflow {
 namespace tfcompile {
 
 // Flags for the tfcompile binary.  See *.cc file for descriptions.
+
 struct MainFlags {
   string graph;
   string config;
   bool dump_fetch_nodes = false;
-  string debug_dir;
   string target_triple;
   string target_cpu;
   string target_features;
   string entry_point;
   string cpp_class;
-  string out_object;
+  string out_function_object;
+  string out_metadata_object;
   string out_header;
+  string out_session_module;
+  string mlir_components;
+
+  // C++ codegen options
+  bool gen_name_to_index = false;
+  bool gen_program_shape = false;
 };
 
 // Appends to flag_list a tensorflow::Flag for each field in MainFlags.

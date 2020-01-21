@@ -16,6 +16,8 @@ limitations under the License.
 // See docs in ../ops/image_ops.cc
 
 #include <memory>
+
+#include "absl/strings/escaping.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/framework/tensor.h"
@@ -41,9 +43,9 @@ enum FileFormat {
 // Classify the contents of a file based on starting bytes (the magic number).
 FileFormat ClassifyFileFormat(StringPiece data) {
   // The 4th byte of JPEG is '\xe0' or '\xe1', so check just the first three
-  if (data.starts_with("\xff\xd8\xff")) return kJpgFormat;
-  if (data.starts_with("\x89PNG\r\n\x1a\n")) return kPngFormat;
-  if (data.starts_with("\x47\x49\x46\x38")) return kGifFormat;
+  if (absl::StartsWith(data, "\xff\xd8\xff")) return kJpgFormat;
+  if (absl::StartsWith(data, "\x89PNG\r\n\x1a\n")) return kPngFormat;
+  if (absl::StartsWith(data, "\x47\x49\x46\x38")) return kGifFormat;
   return kUnknownFormat;
 }
 
@@ -58,19 +60,25 @@ string FileFormatString(FileFormat magic, StringPiece data) {
     default: {
       if (data.empty()) return "empty file";
       return strings::StrCat("unknown format starting with '",
-                             str_util::CEscape(data.substr(0, 16)), "'");
+                             absl::CEscape(data.substr(0, 16)), "'");
     }
   }
 }
 
 // Decode an image (either jpeg, png, or gif).  We use a single op so that
 // users don't have to care about which format they have.
+// TODO(b/141645641): Separate concerns here: constructors uses name to
+// determine type of parsing, compute uses file magic to parse and these might
+// not match.
 class DecodeImageOp : public OpKernel {
  public:
   explicit DecodeImageOp(OpKernelConstruction* context) : OpKernel(context) {
     // Determine which op we are: jpeg, png, gif, or any
     if (type_string() == "DecodeJpeg") {
       format_ = kJpgFormat;
+    } else if (type_string() == "DecodeAndCropJpeg") {
+      format_ = kJpgFormat;
+      flags_.crop = true;
     } else if (type_string() == "DecodePng") {
       format_ = kPngFormat;
     } else if (type_string() == "DecodeGif") {
@@ -149,7 +157,7 @@ class DecodeImageOp : public OpKernel {
                                         contents.shape().DebugString()));
 
     // Determine format
-    const StringPiece input = contents.scalar<string>()();
+    const StringPiece input = contents.scalar<tstring>()();
     const auto magic = ClassifyFileFormat(input);
     OP_REQUIRES(
         context,
@@ -185,12 +193,31 @@ class DecodeImageOp : public OpKernel {
                 errors::InvalidArgument(
                     "channels must be 0, 1, or 3 for JPEG, got ", channels_));
 
-    // Decode jpeg, allocating tensor once the size is known
+    // Use local copy of flags to avoid race condition as the class member is
+    // shared among different invocations.
+    jpeg::UncompressFlags flags = flags_;
+    if (flags.crop) {
+      // Update flags to include crop window.
+      const Tensor& crop_window = context->input(1);
+      OP_REQUIRES(context, crop_window.dims() == 1,
+                  errors::InvalidArgument("crop_window must be 1-D, got shape ",
+                                          crop_window.shape().DebugString()));
+      OP_REQUIRES(context, crop_window.dim_size(0) == 4,
+                  errors::InvalidArgument("crop_size must have four elements ",
+                                          crop_window.shape().DebugString()));
+      auto crop_window_vec = crop_window.vec<int32>();
+      flags.crop_y = crop_window_vec(0);
+      flags.crop_x = crop_window_vec(1);
+      flags.crop_height = crop_window_vec(2);
+      flags.crop_width = crop_window_vec(3);
+    }
+
+    // Decode jpeg, allocating tensor once the size is known.
     Tensor* output = nullptr;
     OP_REQUIRES(
         context,
         jpeg::Uncompress(
-            input.data(), input.size(), flags_, nullptr /* nwarn */,
+            input.data(), input.size(), flags, nullptr /* nwarn */,
             [=, &output](int width, int height, int channels) -> uint8* {
               Status status(context->allocate_output(
                   0,
@@ -205,7 +232,8 @@ class DecodeImageOp : public OpKernel {
               }
               return output->flat<uint8>().data();
             }),
-        errors::InvalidArgument("Invalid JPEG data, size ", input.size()));
+        errors::InvalidArgument("Invalid JPEG data or crop window, data size ",
+                                input.size()));
   }
 
   void DecodePng(OpKernelContext* context, StringPiece input) {
@@ -271,6 +299,7 @@ class DecodeImageOp : public OpKernel {
 
     // Decode GIF, allocating tensor once the size is known.
     Tensor* output = nullptr;
+    string error_string;
     OP_REQUIRES(
         context,
         gif::Decode(input.data(), input.size(),
@@ -297,8 +326,10 @@ class DecodeImageOp : public OpKernel {
                         return nullptr;
                       }
                       return output->flat<uint8>().data();
-                    }),
-        errors::InvalidArgument("Invalid GIF data, size ", input.size()));
+                    },
+                    &error_string),
+        errors::InvalidArgument("Invalid GIF data (size ", input.size(), "), ",
+                                error_string));
   }
 
  private:
@@ -311,6 +342,8 @@ class DecodeImageOp : public OpKernel {
 REGISTER_KERNEL_BUILDER(Name("DecodeJpeg").Device(DEVICE_CPU), DecodeImageOp);
 REGISTER_KERNEL_BUILDER(Name("DecodePng").Device(DEVICE_CPU), DecodeImageOp);
 REGISTER_KERNEL_BUILDER(Name("DecodeGif").Device(DEVICE_CPU), DecodeImageOp);
+REGISTER_KERNEL_BUILDER(Name("DecodeAndCropJpeg").Device(DEVICE_CPU),
+                        DecodeImageOp);
 
 }  // namespace
 }  // namespace tensorflow

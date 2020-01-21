@@ -30,6 +30,45 @@ SnappyOutputBuffer::SnappyOutputBuffer(WritableFile* file,
       next_out_(output_buffer_.get()),
       avail_out_(output_buffer_bytes) {}
 
+SnappyOutputBuffer::~SnappyOutputBuffer() {
+  size_t bytes_to_write = output_buffer_capacity_ - avail_out_;
+  if (bytes_to_write > 0) {
+    LOG(WARNING) << "There is still data in the output buffer. "
+                 << "Possible data loss has occurred.";
+  }
+}
+
+Status SnappyOutputBuffer::Append(StringPiece data) { return Write(data); }
+
+#if defined(PLATFORM_GOOGLE)
+Status SnappyOutputBuffer::Append(const absl::Cord& cord) {
+  absl::CordReader reader(cord);
+  absl::string_view fragment;
+  while (reader.ReadFragment(&fragment)) {
+    TF_RETURN_IF_ERROR(Append(fragment));
+  }
+  return Status::OK();
+}
+#endif
+
+Status SnappyOutputBuffer::Close() {
+  // Given that we do not own `file`, we don't close it.
+  return Flush();
+}
+
+Status SnappyOutputBuffer::Name(StringPiece* result) const {
+  return file_->Name(result);
+}
+
+Status SnappyOutputBuffer::Sync() {
+  TF_RETURN_IF_ERROR(Flush());
+  return file_->Sync();
+}
+
+Status SnappyOutputBuffer::Tell(int64* position) {
+  return file_->Tell(position);
+}
+
 Status SnappyOutputBuffer::Write(StringPiece data) {
   //
   // The deflated output is accumulated in output_buffer_ and gets written to
@@ -63,7 +102,7 @@ Status SnappyOutputBuffer::Write(StringPiece data) {
 
   TF_RETURN_IF_ERROR(Deflate());
 
-  DCHECK(avail_in_ == 0);  // All input will be used up.
+  DCHECK_EQ(avail_in_, 0);  // All input will be used up.
 
   next_in_ = input_buffer_.get();
 
@@ -132,7 +171,7 @@ Status SnappyOutputBuffer::AddToOutputBuffer(const char* data, size_t length) {
 
 Status SnappyOutputBuffer::DeflateBuffered() {
   TF_RETURN_IF_ERROR(Deflate());
-  DCHECK(avail_in_ == 0);
+  DCHECK_EQ(avail_in_, 0);
   next_in_ = input_buffer_.get();
   return Status::OK();
 }
@@ -161,7 +200,7 @@ Status SnappyOutputBuffer::Deflate() {
   }
 
   // Write length of compressed block to output buffer.
-  char* compressed_length_array = new char[4];
+  char compressed_length_array[4];
   std::fill(compressed_length_array, compressed_length_array + 4, 0);
   for (int i = 0; i < 4; i++) {
     // Little endian.
@@ -173,7 +212,6 @@ Status SnappyOutputBuffer::Deflate() {
   TF_RETURN_IF_ERROR(AddToOutputBuffer(output.data(), output.size()));
   next_in_ += avail_in_;
   avail_in_ = 0;
-  delete[] compressed_length_array;
 
   return Status::OK();
 }

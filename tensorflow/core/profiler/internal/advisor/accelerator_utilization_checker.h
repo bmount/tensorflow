@@ -13,9 +13,10 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 // This checker checks the accelerator's utilization.
-#ifndef THIRD_PARTY_TENSORFLOW_CORE_PROFILER_INTERNAL_ADVISOR_ACCELERATOR_UTILIZATION_CHECKER_H_
-#define THIRD_PARTY_TENSORFLOW_CORE_PROFILER_INTERNAL_ADVISOR_ACCELERATOR_UTILIZATION_CHECKER_H_
+#ifndef TENSORFLOW_CORE_PROFILER_INTERNAL_ADVISOR_ACCELERATOR_UTILIZATION_CHECKER_H_
+#define TENSORFLOW_CORE_PROFILER_INTERNAL_ADVISOR_ACCELERATOR_UTILIZATION_CHECKER_H_
 
+#include "absl/strings/str_format.h"
 #include "tensorflow/core/profiler/internal/advisor/checker.h"
 
 namespace tensorflow {
@@ -39,8 +40,8 @@ class AcceleratorUtilizationChecker : public Checker {
   AdviceProto::Checker Check(const AdvisorOptionsProto::CheckerOption& options,
                              const TFStats* stats) override {
     if (!stats) {
-      fprintf(stderr, "Missing profiles (e.g. graph, run_meta). Skip %s\n",
-              name().c_str());
+      absl::FPrintF(
+          stderr, "Missing profiles (e.g. graph, run_meta). Skip %s\n", name());
       return reports_;
     }
     for (const auto& n : stats->nodes()) {
@@ -56,14 +57,14 @@ class AcceleratorUtilizationChecker : public Checker {
       if (total_micros <= 0) continue;
       double utilization = 1.0 * stat.exec_micros / total_micros;
       if (utilization >= 0.5) {
-        reports_.add_reports(strings::Printf("device: %s utilization: %.2f",
-                                             s.first.c_str(), utilization));
+        reports_.add_reports(absl::StrFormat("device: %s utilization: %.2f",
+                                             s.first, utilization));
       } else if (utilization < 0.5 && utilization > 0.2) {
-        reports_.add_reports(strings::Printf("device: %s low utilization: %.2f",
-                                             s.first.c_str(), utilization));
+        reports_.add_reports(absl::StrFormat("device: %s low utilization: %.2f",
+                                             s.first, utilization));
       } else if (utilization <= 0.2) {
-        reports_.add_reports(strings::Printf("device: %s low utilization: %.2f",
-                                             s.first.c_str(), utilization));
+        reports_.add_reports(absl::StrFormat("device: %s low utilization: %.2f",
+                                             s.first, utilization));
       }
     }
     return reports_;
@@ -106,4 +107,4 @@ class AcceleratorUtilizationChecker : public Checker {
 }  // namespace tfprof
 }  // namespace tensorflow
 
-#endif  // THIRD_PARTY_TENSORFLOW_CORE_PROFILER_INTERNAL_ADVISOR_ACCELERATOR_UTILIZATION_CHECKER_H_
+#endif  // TENSORFLOW_CORE_PROFILER_INTERNAL_ADVISOR_ACCELERATOR_UTILIZATION_CHECKER_H_

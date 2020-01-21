@@ -13,8 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef THIRD_PARTY_TENSORFLOW_CC_TRAINING_COORDINATOR_H_
-#define THIRD_PARTY_TENSORFLOW_CC_TRAINING_COORDINATOR_H_
+#ifndef TENSORFLOW_CC_TRAINING_COORDINATOR_H_
+#define TENSORFLOW_CC_TRAINING_COORDINATOR_H_
 
 #include <atomic>
 #include <memory>
@@ -22,11 +22,11 @@ limitations under the License.
 #include <vector>
 
 #include "tensorflow/core/framework/cost_graph.pb.h"
-#include "tensorflow/core/lib/core/error_codes.pb.h"
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/platform/macros.h"
 #include "tensorflow/core/platform/mutex.h"
 #include "tensorflow/core/protobuf/config.pb.h"
+#include "tensorflow/core/protobuf/error_codes.pb.h"
 
 namespace tensorflow {
 
@@ -128,4 +128,4 @@ class Coordinator {
 
 }  // namespace tensorflow
 
-#endif  // THIRD_PARTY_TENSORFLOW_CC_TRAINING_COORDINATOR_H_
+#endif  // TENSORFLOW_CC_TRAINING_COORDINATOR_H_

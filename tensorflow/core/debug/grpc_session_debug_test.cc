@@ -35,6 +35,7 @@ limitations under the License.
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/platform/test.h"
 #include "tensorflow/core/protobuf/debug.pb.h"
+#include "tensorflow/core/protobuf/rewriter_config.pb.h"
 #include "tensorflow/core/public/session.h"
 #include "tensorflow/core/util/port.h"
 
@@ -85,6 +86,9 @@ SessionOptions Options(const string& target, int placement_period) {
   options.config.mutable_graph_options()
       ->mutable_optimizer_options()
       ->set_opt_level(OptimizerOptions::L0);
+  options.config.mutable_graph_options()
+      ->mutable_rewrite_options()
+      ->set_constant_folding(RewriterConfig::OFF);
   return options;
 }
 
@@ -227,7 +231,7 @@ TEST_F(GrpcSessionDebugTest, MultiDevices_String) {
   Graph graph(OpRegistry::Global());
   Tensor a_tensor(DT_STRING, TensorShape({2, 2}));
   for (size_t i = 0; i < 4; ++i) {
-    a_tensor.flat<string>()(i) = "hello, world";
+    a_tensor.flat<tstring>()(i) = "hello, world";
   }
   Node* a = test::graph::Constant(&graph, a_tensor);
   Node* b = test::graph::Identity(&graph, a);
@@ -262,7 +266,7 @@ TEST_F(GrpcSessionDebugTest, MultiDevices_String) {
         ASSERT_EQ(outputs[0].dtype(), DT_STRING);
         ASSERT_EQ(outputs[0].NumElements(), 4);
         for (size_t i = 0; i < outputs[0].NumElements(); ++i) {
-          EXPECT_EQ(outputs[0].flat<string>()(i), "hello, world");
+          EXPECT_EQ(outputs[0].flat<tstring>()(i), "hello, world");
         }
         TF_CHECK_OK(session->Close());
 
@@ -274,7 +278,7 @@ TEST_F(GrpcSessionDebugTest, MultiDevices_String) {
         ASSERT_EQ(1, dumped_tensors.size());
         ASSERT_EQ(TensorShape({2, 2}), dumped_tensors[0].shape());
         for (size_t i = 0; i < 4; ++i) {
-          ASSERT_EQ("hello, world", dumped_tensors[0].flat<string>()(i));
+          ASSERT_EQ("hello, world", dumped_tensors[0].flat<tstring>()(i));
         }
 
         DeleteDumpDir();

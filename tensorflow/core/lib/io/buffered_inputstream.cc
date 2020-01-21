@@ -41,9 +41,18 @@ BufferedInputStream::~BufferedInputStream() {
 }
 
 Status BufferedInputStream::FillBuffer() {
+  if (!file_status_.ok()) {
+    pos_ = 0;
+    limit_ = 0;
+    return file_status_;
+  }
   Status s = input_stream_->ReadNBytes(size_, &buf_);
   pos_ = 0;
   limit_ = buf_.size();
+  if (buf_.empty()) {
+    DCHECK(!s.ok());
+    file_status_ = s;
+  }
   return s;
 }
 
@@ -76,12 +85,15 @@ Status BufferedInputStream::ReadLineHelper(string* result, bool include_eol) {
   return s;
 }
 
-Status BufferedInputStream::ReadNBytes(int64 bytes_to_read, string* result) {
+Status BufferedInputStream::ReadNBytes(int64 bytes_to_read, tstring* result) {
   if (bytes_to_read < 0) {
     return errors::InvalidArgument("Can't read a negative number of bytes: ",
                                    bytes_to_read);
   }
   result->clear();
+  if (!file_status_.ok() && bytes_to_read > 0) {
+    return file_status_;
+  }
   result->reserve(bytes_to_read);
 
   Status s;
@@ -91,6 +103,8 @@ Status BufferedInputStream::ReadNBytes(int64 bytes_to_read, string* result) {
       s = FillBuffer();
       // If we didn't read any bytes, we're at the end of the file; break out.
       if (limit_ == 0) {
+        DCHECK(!s.ok());
+        file_status_ = s;
         break;
       }
     }
@@ -124,6 +138,9 @@ Status BufferedInputStream::SkipNBytes(int64 bytes_to_skip) {
     Status s = input_stream_->SkipNBytes(bytes_to_skip - (limit_ - pos_));
     pos_ = 0;
     limit_ = 0;
+    if (errors::IsOutOfRange(s)) {
+      file_status_ = s;
+    }
     return s;
   }
   return Status::OK();
@@ -150,7 +167,8 @@ Status BufferedInputStream::Seek(int64 position) {
   return SkipNBytes(position - bufpos);
 }
 
-Status BufferedInputStream::ReadAll(string* result) {
+template <typename T>
+Status BufferedInputStream::ReadAll(T* result) {
   result->clear();
   Status status;
   while (status.ok()) {
@@ -163,15 +181,22 @@ Status BufferedInputStream::ReadAll(string* result) {
   }
 
   if (errors::IsOutOfRange(status)) {
+    file_status_ = status;
     return Status::OK();
   }
   return status;
 }
 
+template Status BufferedInputStream::ReadAll<string>(string* result);
+#ifdef USE_TSTRING
+template Status BufferedInputStream::ReadAll<tstring>(tstring* result);
+#endif  // USE_TSTRING
+
 Status BufferedInputStream::Reset() {
   TF_RETURN_IF_ERROR(input_stream_->Reset());
   pos_ = 0;
   limit_ = 0;
+  file_status_ = Status::OK();
   return Status::OK();
 }
 

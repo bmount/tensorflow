@@ -13,8 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef THIRD_PARTY_TENSORFLOW_EXAMPLES_ANDROID_JNI_OBJECT_TRACKING_TRACKED_OBJECT_H_
-#define THIRD_PARTY_TENSORFLOW_EXAMPLES_ANDROID_JNI_OBJECT_TRACKING_TRACKED_OBJECT_H_
+#ifndef TENSORFLOW_EXAMPLES_ANDROID_JNI_OBJECT_TRACKING_TRACKED_OBJECT_H_
+#define TENSORFLOW_EXAMPLES_ANDROID_JNI_OBJECT_TRACKING_TRACKED_OBJECT_H_
 
 #ifdef __RENDER_OPENGL__
 #include "tensorflow/examples/android/jni/object_tracking/gl_utils.h"
@@ -37,7 +37,7 @@ class TrackedObject {
   ~TrackedObject();
 
   void UpdatePosition(const BoundingBox& new_position, const int64_t timestamp,
-                      const ImageData& image_data, const bool authoratative);
+                      const ImageData& image_data, const bool authoritative);
 
   // This method is called when the tracked object is detected at a
   // given position, and allows the associated Model to grow and/or prune
@@ -183,4 +183,4 @@ inline std::ostream& operator<<(std::ostream& stream,
 
 }  // namespace tf_tracking
 
-#endif  // THIRD_PARTY_TENSORFLOW_EXAMPLES_ANDROID_JNI_OBJECT_TRACKING_TRACKED_OBJECT_H_
+#endif  // TENSORFLOW_EXAMPLES_ANDROID_JNI_OBJECT_TRACKING_TRACKED_OBJECT_H_

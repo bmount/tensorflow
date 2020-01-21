@@ -13,8 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_UTIL_ACTIVATION_MODE_H_
-#define TENSORFLOW_UTIL_ACTIVATION_MODE_H_
+#ifndef TENSORFLOW_CORE_UTIL_ACTIVATION_MODE_H_
+#define TENSORFLOW_CORE_UTIL_ACTIVATION_MODE_H_
 
 // This file contains helper routines to deal with activation mode in various
 // ops and kernels.
@@ -28,6 +28,7 @@ namespace tensorflow {
 
 // ActivationMode: the activation function we apply to the input tensor:
 enum ActivationMode {
+  NONE = 0,
   SIGMOID = 1,
   RELU = 2,
   RELU6 = 3,
@@ -42,4 +43,4 @@ Status GetActivationModeFromString(const string& str_value,
 
 }  // end namespace tensorflow
 
-#endif  // TENSORFLOW_UTIL_ACTIVATION_MODE_H_
+#endif  // TENSORFLOW_CORE_UTIL_ACTIVATION_MODE_H_

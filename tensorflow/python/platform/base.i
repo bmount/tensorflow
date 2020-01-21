@@ -18,7 +18,12 @@ limitations under the License.
 %{
   #include <memory>
   #include <vector>
+  #include "tensorflow/c/tf_status.h"
   #include "tensorflow/core/platform/types.h"
+  #include "tensorflow/c/tf_datatype.h"
+  #include "tensorflow/python/lib/core/py_exception_registry.h"
+
+  using tensorflow::int64;
   using tensorflow::uint64;
   using tensorflow::string;
 
@@ -34,16 +39,6 @@ limitations under the License.
     return NULL;
   }
 
-#ifdef HAS_GLOBAL_STRING
-  template<>
-      bool _PyObjAs(PyObject *pystr, ::string* cstr) {
-    char *buf;
-    Py_ssize_t len;
-    if (PyBytes_AsStringAndSize(pystr, &buf, &len) == -1) return false;
-    if (cstr) cstr->assign(buf, len);
-    return true;
-  }
-#endif
   template<>
       bool _PyObjAs(PyObject *pystr, std::string* cstr) {
     char *buf;
@@ -52,12 +47,6 @@ limitations under the License.
     if (cstr) cstr->assign(buf, len);
     return true;
   }
-#ifdef HAS_GLOBAL_STRING
-  template<>
-      PyObject* _PyObjFrom(const ::string& c) {
-    return PyBytes_FromStringAndSize(c.data(), c.size());
-  }
-#endif
   template<>
       PyObject* _PyObjFrom(const std::string& c) {
     return PyBytes_FromStringAndSize(c.data(), c.size());
@@ -104,6 +93,10 @@ limitations under the License.
 %typemap(in) const string& (string temp) {
   if (!_PyObjAs<string>($input, &temp)) return NULL;
   $1 = &temp;
+}
+
+%typemap(out) int64_t {
+  $result = PyLong_FromLongLong($1);
 }
 
 %typemap(out) string {
@@ -225,3 +218,70 @@ _COPY_TYPEMAPS(unsigned int, mode_t);
 %define final %enddef
 %define override %enddef
 #endif
+
+
+// This was originally included in pywrap_tfe.i, but is used by tf_session.i
+%include "tensorflow/c/tf_status.h"
+%include "tensorflow/c/tf_datatype.h"
+
+%typemap(in) (const void* proto) {
+  char* c_string;
+  Py_ssize_t py_size;
+  // PyBytes_AsStringAndSize() does not copy but simply interprets the input
+  if (PyBytes_AsStringAndSize($input, &c_string, &py_size) == -1) {
+    // Python has raised an error (likely TypeError or UnicodeEncodeError).
+    SWIG_fail;
+  }
+  $1 = static_cast<void*>(c_string);
+}
+
+%typemap(in) int64_t {
+  $1 = PyLong_AsLongLong($input);
+}
+
+%typemap(out) TF_DataType {
+  $result = PyInt_FromLong($1);
+}
+
+%typemap(out) int64_t {
+  $result = PyInt_FromLong($1);
+}
+
+%typemap(out) TF_AttrType {
+  $result = PyInt_FromLong($1);
+}
+
+%typemap(in, numinputs=0) unsigned char* is_list (unsigned char tmp) {
+  tmp = 0;
+  $1 = &tmp;
+}
+
+%typemap(argout) unsigned char* is_list {
+  if (*$1 == 1) {
+    PyObject* list = PyList_New(1);
+    PyList_SetItem(list, 0, $result);
+    $result = list;
+  }
+}
+
+// Typemaps to automatically raise a Python exception from bad output TF_Status.
+// TODO(b/77295559): expand this to all TF_Status* output params and deprecate
+// raise_exception_on_not_ok_status (currently it only affects the C API).
+%typemap(in, numinputs=0) TF_Status* status {
+  $1 = TF_NewStatus();
+}
+
+%typemap(freearg) (TF_Status* status) {
+ TF_DeleteStatus($1);
+}
+
+%typemap(argout) TF_Status* status {
+  TF_Code code = TF_GetCode($1);
+  if (code != TF_OK) {
+    PyObject* exc = tensorflow::PyExceptionRegistry::Lookup(code);
+    // Arguments to OpError.
+    PyObject* exc_args = Py_BuildValue("sss", nullptr, nullptr, TF_Message($1));
+    SWIG_SetErrorObj(exc, exc_args);
+    SWIG_fail;
+  }
+}

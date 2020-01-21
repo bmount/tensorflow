@@ -15,9 +15,12 @@ limitations under the License.
 
 #define EIGEN_USE_THREADS
 
-#if GOOGLE_CUDA
+#if (defined(GOOGLE_CUDA) && GOOGLE_CUDA) || \
+    (defined(TENSORFLOW_USE_ROCM) && TENSORFLOW_USE_ROCM)
 #define EIGEN_USE_GPU
-#endif  // GOOGLE_CUDA
+#endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
+
+#include "tensorflow/cc/ops/nn_ops.h"
 
 #include <functional>
 #include <memory>
@@ -26,10 +29,8 @@ limitations under the License.
 
 #include "third_party/eigen3/Eigen/Core"
 #include "tensorflow/cc/ops/const_op.h"
-#include "tensorflow/cc/ops/nn_ops.h"
 #include "tensorflow/cc/ops/nn_ops_internal.h"
 #include "tensorflow/core/common_runtime/device_factory.h"
-#include "tensorflow/core/common_runtime/eigen_thread_pool.h"
 #include "tensorflow/core/common_runtime/kernel_benchmark_testlib.h"
 #include "tensorflow/core/framework/allocator.h"
 #include "tensorflow/core/framework/fake_input.h"
@@ -107,6 +108,7 @@ static void BM_ConvFloat(int iters, int batch, int rows, int cols, int in_depth,
                          CONV_OP op, int num_threads, int stride,
                          Padding padding, bool use_gpu, DataType data_type,
                          const string& label) {
+  testing::StopTiming();
   if (!IsGoogleCudaEnabled() && use_gpu) {
     testing::SetLabel(
         strings::StrCat("Skipping GPU test (no --config=cuda): ", label));
@@ -220,6 +222,7 @@ static void BM_ConvFloat(int iters, int batch, int rows, int cols, int in_depth,
 
   string device = use_gpu ? "gpu" : "cpu";
   testing::UseRealTime();
+  testing::StartTiming();
   test::Benchmark(device, g, &options).Run(iters);
   testing::ItemsProcessed(num_ops * iters);
 }
@@ -501,6 +504,7 @@ static void BM_ConvFloatDepthwise(int iters, int batch, int rows, int cols,
                                   int filter_cols, DEPTHWISE_CONV_OP op,
                                   int num_threads, int stride, Padding padding,
                                   bool use_gpu, const string& label) {
+  testing::StopTiming();
   if (!IsGoogleCudaEnabled() && use_gpu) {
     testing::SetLabel(
         strings::StrCat("Skipping GPU test (no --config=cuda): ", label));
@@ -600,6 +604,7 @@ static void BM_ConvFloatDepthwise(int iters, int batch, int rows, int cols,
 
   string device = use_gpu ? "gpu" : "cpu";
   testing::UseRealTime();
+  testing::StartTiming();
   test::Benchmark(device, g, &options).Run(iters);
   testing::ItemsProcessed(num_ops * iters);
 }
@@ -653,6 +658,8 @@ BM_ConvFloatDepthwiseFwd(32, 7, 7, 1024, 1, 1024, 3, 3, 1, SAME, conv6);
 // Benchmarks with different stride and padding options.
 BM_ConvFloatDepthwiseFwd(32, 112, 112, 3, 8, 24, 3, 3, 2, SAME, conv7);
 BM_ConvFloatDepthwiseFwd(32, 112, 112, 3, 8, 24, 3, 3, 2, VALID, conv8);
+BM_ConvFloatDepthwiseFwd(1, 100, 100, 72, 1, 72, 3, 3, 1, SAME, conv9);
+BM_ConvFloatDepthwiseFwd(1, 100, 100, 72, 1, 72, 5, 5, 1, SAME, conv10);
 
 #define BM_ConvFloatDepthwiseBk(BS, R, C, ID, DM, OD, KR, KC, STR, PAD, LABEL) \
   static void BM_ConvFloatDepthwiseBkInCPU1_##LABEL(int iters) {               \
@@ -733,8 +740,8 @@ static void BM_LRNFloat(int iters, int depth, int cols, int rows,
       DeviceFactory::NewDevice("CPU", {}, "/job:a/replica:0/task:0"));
 
   thread::ThreadPool threadpool(Env::Default(), "test", num_threads);
-  EigenThreadPoolWrapper wrapper(&threadpool);
-  Eigen::ThreadPoolDevice eigen_cpu_device(&wrapper, num_threads);
+  Eigen::ThreadPoolDevice eigen_cpu_device(threadpool.AsEigenThreadPool(),
+                                           num_threads);
   device->set_eigen_cpu_device(&eigen_cpu_device);
 
   gtl::InlinedVector<TensorValue, 4> inputs;
@@ -771,6 +778,7 @@ static void BM_LRNFloat(int iters, int depth, int cols, int rows,
   std::unique_ptr<OpKernelContext> context(new OpKernelContext(&params));
 
   op->Compute(context.get());
+  testing::UseRealTime();
   tensorflow::testing::StartTiming();
   for (int i = 0; i < iters; ++i) {
     delete context->release_output(0).tensor;
@@ -815,8 +823,8 @@ static void BM_AvgPool(int iters, int batch_size, int rows, int cols, int depth,
       DeviceFactory::NewDevice("CPU", {}, "/job:a/replica:0/task:0"));
 
   thread::ThreadPool threadpool(Env::Default(), "test", num_threads);
-  EigenThreadPoolWrapper wrapper(&threadpool);
-  Eigen::ThreadPoolDevice eigen_cpu_device(&wrapper, num_threads);
+  Eigen::ThreadPoolDevice eigen_cpu_device(threadpool.AsEigenThreadPool(),
+                                           num_threads);
   device->set_eigen_cpu_device(&eigen_cpu_device);
 
   gtl::InlinedVector<TensorValue, 4> inputs;
@@ -852,6 +860,7 @@ static void BM_AvgPool(int iters, int batch_size, int rows, int cols, int depth,
       new OpKernelContext(&params));
 
   op->Compute(avgpool_context.get());
+  testing::UseRealTime();
   tensorflow::testing::StartTiming();
   for (int i = 0; i < iters; ++i) {
     delete avgpool_context->release_output(0).tensor;
@@ -907,8 +916,8 @@ static void BM_AvgPoolBk(int iters, int batch_size, int rows, int cols,
       DeviceFactory::NewDevice("CPU", {}, "/job:a/replica:0/task:0"));
 
   thread::ThreadPool threadpool(Env::Default(), "test", num_threads);
-  EigenThreadPoolWrapper wrapper(&threadpool);
-  Eigen::ThreadPoolDevice eigen_cpu_device(&wrapper, num_threads);
+  Eigen::ThreadPoolDevice eigen_cpu_device(threadpool.AsEigenThreadPool(),
+                                           num_threads);
   device->set_eigen_cpu_device(&eigen_cpu_device);
 
   gtl::InlinedVector<TensorValue, 4> inputs;
@@ -957,6 +966,7 @@ static void BM_AvgPoolBk(int iters, int batch_size, int rows, int cols,
       new OpKernelContext(&params));
 
   op->Compute(avgpool_context.get());
+  testing::UseRealTime();
   tensorflow::testing::StartTiming();
   for (int i = 0; i < iters; ++i) {
     delete avgpool_context->release_output(0).tensor;
@@ -1011,8 +1021,8 @@ static void BM_MaxPool(int iters, int batch_size, int rows, int cols, int depth,
       DeviceFactory::NewDevice("CPU", options, "/job:a/replica:0/task:0"));
 
   thread::ThreadPool threadpool(Env::Default(), "test", num_threads);
-  EigenThreadPoolWrapper wrapper(&threadpool);
-  Eigen::ThreadPoolDevice eigen_cpu_device(&wrapper, num_threads);
+  Eigen::ThreadPoolDevice eigen_cpu_device(threadpool.AsEigenThreadPool(),
+                                           num_threads);
   device->set_eigen_cpu_device(&eigen_cpu_device);
 
   gtl::InlinedVector<TensorValue, 4> inputs;
@@ -1047,6 +1057,7 @@ static void BM_MaxPool(int iters, int batch_size, int rows, int cols, int depth,
       new OpKernelContext(&params));
 
   op->Compute(maxpool_context.get());
+  testing::UseRealTime();
   tensorflow::testing::StartTiming();
   for (int i = 0; i < iters; ++i) {
     delete maxpool_context->release_output(0).tensor;
@@ -1191,8 +1202,8 @@ static void BM_ReluFloat(int iters, int batch_size, int rows, int cols,
       DeviceFactory::NewDevice("CPU", {}, "/job:a/replica:0/task:0"));
 
   thread::ThreadPool threadpool(Env::Default(), "test", num_threads);
-  EigenThreadPoolWrapper wrapper(&threadpool);
-  Eigen::ThreadPoolDevice eigen_cpu_device(&wrapper, num_threads);
+  Eigen::ThreadPoolDevice eigen_cpu_device(threadpool.AsEigenThreadPool(),
+                                           num_threads);
   device->set_eigen_cpu_device(&eigen_cpu_device);
 
   gtl::InlinedVector<TensorValue, 4> inputs;
@@ -1222,6 +1233,7 @@ static void BM_ReluFloat(int iters, int batch_size, int rows, int cols,
   std::unique_ptr<OpKernelContext> relu_context(new OpKernelContext(&params));
 
   op->Compute(relu_context.get());
+  testing::UseRealTime();
   tensorflow::testing::StartTiming();
   for (int i = 0; i < iters; ++i) {
     delete relu_context->release_output(0).tensor;
@@ -1252,32 +1264,36 @@ BM_Relu(32, 56, 56, 192, 4, "relu1");
 BM_Relu(32, 28, 28, 352, 4, "relu4");
 BM_Relu(32, 14, 14, 576, 4, "relu10");
 
-static void BM_ImageNetSoftmaxFwd(int iters, int batch_size, int node_depth,
-                                  int num_threads, const string& label) {
+/*
+Softplus Op
+Run benchmark with:
+*/
+static void BM_SoftplusFloat(int iters, int batch_size, int rows, int cols,
+                             int depth, int num_threads, const string& label) {
   tensorflow::testing::StopTiming();
   std::unique_ptr<Device> device(
       DeviceFactory::NewDevice("CPU", {}, "/job:a/replica:0/task:0"));
 
   thread::ThreadPool threadpool(Env::Default(), "test", num_threads);
-  EigenThreadPoolWrapper wrapper(&threadpool);
-  Eigen::ThreadPoolDevice eigen_cpu_device(&wrapper, num_threads);
+  Eigen::ThreadPoolDevice eigen_cpu_device(threadpool.AsEigenThreadPool(),
+                                           num_threads);
   device->set_eigen_cpu_device(&eigen_cpu_device);
 
   gtl::InlinedVector<TensorValue, 4> inputs;
-  TensorShape shape1({node_depth, batch_size});
-  Tensor* input1 = new Tensor(DT_FLOAT, shape1);
-  test::FillIota<float>(input1, 1.0);
-  inputs.push_back({nullptr, input1});
+  TensorShape shape1({batch_size, rows, cols, depth});
+  Tensor input1(DT_FLOAT, shape1);
+  input1.flat<float>().setRandom();
+  inputs.push_back({nullptr, &input1});
 
-  // Softmax op.
-  NodeDef softmax_node_def;
-  TF_CHECK_OK(NodeDefBuilder("softmax_op", "Softmax")
-                  .Input("input", 0, DT_FLOAT)
-                  .Finalize(&softmax_node_def));
-  Status status;
-  std::unique_ptr<OpKernel> op(CreateOpKernel(DEVICE_CPU, device.get(),
-                                              cpu_allocator(), softmax_node_def,
-                                              TF_GRAPH_DEF_VERSION, &status));
+  // Softplusing op.
+  NodeDef softplus_node_def;
+  Status status = NodeDefBuilder("softplus_op", "Softplus")
+                      .Input(FakeInput(DT_FLOAT))
+                      .Finalize(&softplus_node_def);
+  TF_CHECK_OK(status);
+  std::unique_ptr<OpKernel> op(
+      CreateOpKernel(DEVICE_CPU, device.get(), cpu_allocator(),
+                     softplus_node_def, TF_GRAPH_DEF_VERSION, &status));
   TF_CHECK_OK(status);
   OpKernelContext::Params params;
   params.device = device.get();
@@ -1287,33 +1303,85 @@ static void BM_ImageNetSoftmaxFwd(int iters, int batch_size, int node_depth,
   std::vector<AllocatorAttributes> attrs;
   test::SetOutputAttrs(&params, &attrs);
 
-  std::unique_ptr<OpKernelContext> softmax_context(
+  std::unique_ptr<OpKernelContext> softplus_context(
       new OpKernelContext(&params));
 
-  op->Compute(softmax_context.get());
+  op->Compute(softplus_context.get());
+  testing::UseRealTime();
   tensorflow::testing::StartTiming();
   for (int i = 0; i < iters; ++i) {
-    delete softmax_context->release_output(0).tensor;
-    op->Compute(softmax_context.get());
+    delete softplus_context->release_output(0).tensor;
+    op->Compute(softplus_context.get());
   }
   tensorflow::testing::StopTiming();
-  testing::ItemsProcessed(softmax_context->mutable_output(0)->NumElements() *
+  testing::ItemsProcessed(softplus_context->mutable_output(0)->NumElements() *
                           iters);
   testing::SetLabel(label);
 }
 
-#define BM_ImageNetSoftmaxFwdCPU(BATCH_SIZE, NODE_DEPTH, TH, LABEL)     \
-  static void BM_ImageNetSoftmaxFwd_##BATCH_SIZE##_##NODE_DEPTH##_##TH( \
-      int iters) {                                                      \
-    BM_ImageNetSoftmaxFwd(iters, BATCH_SIZE, NODE_DEPTH, TH, LABEL);    \
-  }                                                                     \
-  BENCHMARK(BM_ImageNetSoftmaxFwd_##BATCH_SIZE##_##NODE_DEPTH##_##TH)
+// BS: batch_size
+// IR: input_rows
+// IC: input_cols
+// ND: node_depth
+#define BM_Softplus(BS, IR, IC, ND, TH, LABEL)                               \
+  static void BM_SoftplusFloat_##BS##_##IR##_##IC##_##ND##_##TH(int iters) { \
+    BM_SoftplusFloat(iters, BS, IR, IC, ND, TH, LABEL);                      \
+  }                                                                          \
+  BENCHMARK(BM_SoftplusFloat_##BS##_##IR##_##IC##_##ND##_##TH)
+
+BM_Softplus(32, 112, 112, 64, 1, "softplus0");
+BM_Softplus(32, 56, 56, 192, 1, "softplus1");
+BM_Softplus(32, 28, 28, 352, 1, "softplus4");
+BM_Softplus(32, 14, 14, 576, 1, "softplus10");
+BM_Softplus(32, 112, 112, 64, 4, "softplus0");
+BM_Softplus(32, 56, 56, 192, 4, "softplus1");
+BM_Softplus(32, 28, 28, 352, 4, "softplus4");
+BM_Softplus(32, 14, 14, 576, 4, "softplus10");
+
+static void BM_ImageNetSoftmaxFwd(int iters, int batch_size, int node_depth,
+                                  int num_threads, bool use_gpu,
+                                  const string& label) {
+  auto root = Scope::NewRootScope().ExitOnError();
+
+  Tensor input(DT_FLOAT, TensorShape({batch_size, node_depth}));
+  input.flat<float>().setRandom();
+
+  auto softmax = ops::Softmax(root, input);
+
+  TF_CHECK_OK(root.status());
+  Graph* g = new Graph(OpRegistry::Global());
+  TF_CHECK_OK(root.ToGraph(g));
+  string device = use_gpu ? "gpu" : "cpu";
+  SessionOptions opts;
+  opts.config.set_inter_op_parallelism_threads(1);
+  opts.config.set_intra_op_parallelism_threads(num_threads);
+  opts.config.set_use_per_session_threads(true);
+  opts.config.mutable_graph_options()
+      ->mutable_optimizer_options()
+      ->set_opt_level(OptimizerOptions::L0);
+  testing::UseRealTime();
+  test::Benchmark(device, g, &opts).Run(iters);
+  testing::ItemsProcessed(batch_size * node_depth * iters);
+  testing::SetLabel(label);
+}
+
+#define BM_ImageNetSoftmaxFwd(BATCH_SIZE, NODE_DEPTH, TH, GPU, LABEL)     \
+  static void                                                             \
+      BM_ImageNetSoftmaxFwd_##BATCH_SIZE##_##NODE_DEPTH##_##TH##_##GPU(   \
+          int iters) {                                                    \
+    BM_ImageNetSoftmaxFwd(iters, BATCH_SIZE, NODE_DEPTH, TH, GPU, LABEL); \
+  }                                                                       \
+  BENCHMARK(BM_ImageNetSoftmaxFwd_##BATCH_SIZE##_##NODE_DEPTH##_##TH##_##GPU)
 
 // Labels are taken from the 2014-July-24 version of imagenet
-BM_ImageNetSoftmaxFwdCPU(32, 1008, 1, "softmax32");
-BM_ImageNetSoftmaxFwdCPU(128, 1008, 1, "softmax128");
-BM_ImageNetSoftmaxFwdCPU(32, 1008, 4, "softmax32");
-BM_ImageNetSoftmaxFwdCPU(128, 1008, 4, "softmax128");
+BM_ImageNetSoftmaxFwd(32, 1008, 1, false, "softmax32");
+BM_ImageNetSoftmaxFwd(128, 1008, 1, false, "softmax128");
+BM_ImageNetSoftmaxFwd(32, 1008, 4, false, "softmax32");
+BM_ImageNetSoftmaxFwd(128, 1008, 4, false, "softmax128");
+BM_ImageNetSoftmaxFwd(32, 1008, 1, true, "softmax32");
+BM_ImageNetSoftmaxFwd(128, 1008, 1, true, "softmax128");
+BM_ImageNetSoftmaxFwd(8192, 1024, 1, true, "softmax32");
+BM_ImageNetSoftmaxFwd(8192, 32768, 1, true, "softmax128");
 
 static void BM_TopK(int iters, int rows, int cols, int k, int num_threads,
                     bool use_gpu, const string& label) {
@@ -1338,7 +1406,7 @@ static void BM_TopK(int iters, int rows, int cols, int k, int num_threads,
   opts.config.set_use_per_session_threads(true);
   opts.config.mutable_graph_options()
       ->mutable_optimizer_options()
-      ->set_opt_level(OptimizerOptions_Level_L0);
+      ->set_opt_level(OptimizerOptions::L0);
   testing::UseRealTime();
   testing::StartTiming();
   test::Benchmark(device, g, &opts).Run(iters);

@@ -76,18 +76,19 @@ class CholeskyOp : public LinearAlgebraOp<Scalar> {
 typedef Eigen::GpuDevice GPUDevice;
 
 namespace functor {
-#define DECLARE_GPU_SPEC(T)                                                  \
-  template <>                                                                \
-  void MatrixBandPart<GPUDevice, T>::Compute(                                \
-      const GPUDevice& d, Eigen::DenseIndex num_lower,                       \
-      Eigen::DenseIndex num_upper, typename TTypes<T, 3>::ConstTensor input, \
-      typename TTypes<T, 3>::Tensor output);                                 \
-  extern template struct MatrixBandPart<GPUDevice, T>;
+#define DECLARE_GPU_SPEC(T)                                            \
+  template <>                                                          \
+  struct MatrixBandPartFunctor<GPUDevice, T> {                         \
+    void operator()(OpKernelContext* context, const GPUDevice& device, \
+                    int num_upper_diags, int num_lower_diags,          \
+                    typename TTypes<T, 3>::ConstTensor input,          \
+                    typename TTypes<T, 3>::Tensor output);             \
+  };                                                                   \
+  extern template struct MatrixBandPartFunctor<GPUDevice, T>;
 
 TF_CALL_GPU_NUMBER_TYPES(DECLARE_GPU_SPEC);
 TF_CALL_complex64(DECLARE_GPU_SPEC);
 TF_CALL_complex128(DECLARE_GPU_SPEC);
-
 }  // namespace functor
 
 template <class Scalar>
@@ -111,62 +112,99 @@ class CholeskyOpGpu : public AsyncOpKernel {
                                 input.dim_size(ndims - 2), " != ", n),
         done);
 
+    if (input.NumElements() == 0) {
+      // If X is an empty matrix (0 rows, 0 col), X * X' == X.
+      // Therefore, we return X.
+      context->set_output(0, input);
+      done();
+      return;
+    }
+
     // Allocate output.
+    // TODO(rmlarsen): Convert to std::make_unique when available.
+    std::unique_ptr<CudaSolver> solver(new CudaSolver(context));
     Tensor* output;
     OP_REQUIRES_OK_ASYNC(context,
                          context->forward_input_or_allocate_output(
                              {0}, 0, input.shape(), &output),
                          done);
 
-    if (n == 0) {
-      // If X is an empty matrix (0 rows, 0 col), X * X' == X.
-      // Therefore, we return X.
-      done();
-      return;
-    }
-
     // Copy the lower triangular part of the input matrices to the output and
     // set the strictly upper triangular part to zero. We use a pre-existing
     // kernel MatrixBandPart to do this for all matrices in the batch at once,
-    // before we launch each of the Cholesky factorization kernels in paralle.
+    // before we launch each of the Cholesky factorization kernels.
     auto input_reshaped = input.template flat_inner_dims<Scalar, 3>();
     auto output_reshaped = output->template flat_inner_dims<Scalar, 3>();
-    functor::MatrixBandPart<GPUDevice, Scalar>::Compute(
-        context->eigen_device<GPUDevice>(), n, 0, input_reshaped,
-        output_reshaped);
+    functor::MatrixBandPartFunctor<GPUDevice, Scalar> band_part;
+    band_part(context, context->eigen_device<GPUDevice>(),
+              n /* num_lower_diags */, 0 /* num_upper_diags */, input_reshaped,
+              output_reshaped);
 
     // Launch a Cholesky kernel for each matrix in the batch.
     const int64 batch_size = input_reshaped.dimension(0);
     std::vector<DeviceLapackInfo> dev_info;
-    dev_info.emplace_back(context, batch_size, "potrf");
-    // TODO(rmlarsen): Parallelize over batches if it turns out to be
-    // an important use case.
-    CudaSolver solver(context);
-    for (int64 i = 0; i < batch_size; ++i) {
-      Scalar* output_ptr = output_reshaped.data() + i * n * n;
-      int* dev_info_ptr = dev_info.back().mutable_data() + i;
-      OP_REQUIRES_OK_ASYNC(
-          context,
-          solver.Potrf(CUBLAS_FILL_MODE_UPPER, n, output_ptr, n, dev_info_ptr),
-          done);
+
+#if CUDA_VERSION >= 9020
+    // Decide whether to use the batched API.
+    // TODO(rmlarsen): The value 128 was found to be optimal for the equivalent
+    // split in matrix_solve_op. Tune this heuristic.
+    constexpr int kMaxMatrixSizeToBatchSizeRatio = 128;
+    const bool use_batched_solver =
+        n <= kMaxMatrixSizeToBatchSizeRatio * batch_size;
+    if (use_batched_solver) {
+      // For small matrices or large batch sizes, we use the batched interface
+      // from cuSolver.
+      auto output_reshaped_ptrs = solver->GetScratchSpace<uint8>(
+          sizeof(Scalar*) * batch_size, "input_copt_ptrs",
+          /* on_host */ true);
+      const Scalar** output_reshaped_ptrs_base =
+          reinterpret_cast<const Scalar**>(output_reshaped_ptrs.mutable_data());
+      for (int batch = 0; batch < batch_size; ++batch) {
+        output_reshaped_ptrs_base[batch] = &output_reshaped(batch, 0, 0);
+      }
+      dev_info.push_back(
+          solver->GetDeviceLapackInfo(batch_size, "potrfBatched"));
+      OP_REQUIRES_OK_ASYNC(context,
+                           solver->PotrfBatched(CUBLAS_FILL_MODE_UPPER, n,
+                                                output_reshaped_ptrs_base, n,
+                                                &dev_info.back(), batch_size),
+                           done);
+      // TODO(rmlarsen): We have to clear the upper triangle of the output
+      // due to a bug in potrfBatched. Remove this workaround once the bug
+      // is fixed.
+      auto input_reshaped = const_cast<const Tensor*>(output)
+                                ->template flat_inner_dims<Scalar, 3>();
+      auto output_reshaped = output->template flat_inner_dims<Scalar, 3>();
+      functor::MatrixBandPartFunctor<GPUDevice, Scalar> band_part;
+      band_part(context, context->eigen_device<GPUDevice>(),
+                n /* num_lower_diags */, 0 /* num_upper_diags */,
+                input_reshaped, output_reshaped);
+    } else {
+#endif
+
+      dev_info.push_back(solver->GetDeviceLapackInfo(batch_size, "potrf"));
+      for (int batch = 0; batch < batch_size; ++batch) {
+        OP_REQUIRES_OK_ASYNC(context,
+                             solver->Potrf(CUBLAS_FILL_MODE_UPPER, n,
+                                           &output_reshaped(batch, 0, 0), n,
+                                           &dev_info.back()(batch)),
+                             done);
+      }
+
+#if CUDA_VERSION >= 9020
     }
+#endif
 
     // Register callback to check info after kernels finish.
-    auto info_checker = [context, dev_info, done](
+    auto info_checker = [context, done](
                             const Status& status,
                             const std::vector<HostLapackInfo>& /* unused */) {
-      Status full_status = status;
-      if (!full_status.ok()) {
-        full_status.Update(errors::InvalidArgument(kErrMsg));
-      }
-      OP_REQUIRES_OK_ASYNC(context, full_status, done);
+      OP_REQUIRES_ASYNC(context, status.ok(), errors::InvalidArgument(kErrMsg),
+                        done);
       done();
     };
-
-    OP_REQUIRES_OK_ASYNC(
-        context,
-        solver.CopyLapackInfoToHostAsync(dev_info, std::move(info_checker)),
-        done);
+    CudaSolver::CheckLapackInfoAndDeleteSolverAsync(std::move(solver), dev_info,
+                                                    std::move(info_checker));
   }
 };
 

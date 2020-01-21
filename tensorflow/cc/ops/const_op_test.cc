@@ -97,7 +97,21 @@ TEST(ConstOpTest, WithExplicitShape) {
   auto d = ops::Const(root, {"1", "2", "3", "4", "5", "6"}, {2, 3});
   TF_CHECK_OK(root.status());
   EXPECT_EQ(d.op().output_type(0), DT_STRING);
-  ExpectNodeEqual<string>(d.node(), {"1", "2", "3", "4", "5", "6"}, {2, 3});
+  ExpectNodeEqual<tstring>(d.node(), {"1", "2", "3", "4", "5", "6"}, {2, 3});
+}
+
+TEST(ConstOpTest, FromProto) {
+  Scope root = Scope::NewRootScope();
+  TensorProto proto;
+  proto.set_dtype(DT_DOUBLE);
+  TensorShape({2, 2}).AsProto(proto.mutable_tensor_shape());
+  for (int i = 0; i < 4; ++i) {
+    proto.add_double_val(static_cast<double>(i));
+  }
+  auto c = ops::ConstFromProto(root, proto);
+  TF_CHECK_OK(root.status());
+  EXPECT_EQ(c.op().output_type(0), DT_DOUBLE);
+  ExpectNodeEqual<double>(c.node(), {0.0, 1.0, 2.0, 3.0}, {2, 2});
 }
 
 TEST(ConstOpTest, InvalidInitializer) {
@@ -130,7 +144,7 @@ TEST(ConstOpTest, TemplatedConst) {
   auto c1 = ops::Const<int>(root, {1, 2});
   ExpectTypeAndShape(c1.node(), DT_INT32, {2});
 
-  auto c2 = ops::Const<string>(root, {{"this"}, {"is"}, {"a"}, {"constant"}});
+  auto c2 = ops::Const<tstring>(root, {{"this"}, {"is"}, {"a"}, {"constant"}});
   ExpectTypeAndShape(c2.node(), DT_STRING, {4, 1});
 }
 

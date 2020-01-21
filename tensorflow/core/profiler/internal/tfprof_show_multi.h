@@ -15,8 +15,8 @@ limitations under the License.
 
 // Parent class and utilities for tfprof_code.
 
-#ifndef THIRD_PARTY_TENSORFLOW_CORE_PROFILER_INTERNAL_TFPROF_SHOW_MULTI_H_
-#define THIRD_PARTY_TENSORFLOW_CORE_PROFILER_INTERNAL_TFPROF_SHOW_MULTI_H_
+#ifndef TENSORFLOW_CORE_PROFILER_INTERNAL_TFPROF_SHOW_MULTI_H_
+#define TENSORFLOW_CORE_PROFILER_INTERNAL_TFPROF_SHOW_MULTI_H_
 
 #include <algorithm>
 #include <string>
@@ -25,15 +25,14 @@ limitations under the License.
 #include "tensorflow/c/checkpoint_reader.h"
 #include "tensorflow/core/framework/graph.pb.h"
 #include "tensorflow/core/lib/core/errors.h"
-#include "tensorflow/core/lib/strings/stringprintf.h"
 #include "tensorflow/core/profiler/internal/tfprof_constants.h"
 #include "tensorflow/core/profiler/internal/tfprof_node.h"
 #include "tensorflow/core/profiler/internal/tfprof_node_show.h"
-#include "tensorflow/core/profiler/internal/tfprof_options.h"
 #include "tensorflow/core/profiler/internal/tfprof_show.h"
 #include "tensorflow/core/profiler/internal/tfprof_tensor.h"
 #include "tensorflow/core/profiler/internal/tfprof_timeline.h"
 #include "tensorflow/core/profiler/internal/tfprof_utils.h"
+#include "tensorflow/core/profiler/tfprof_options.h"
 #include "tensorflow/core/profiler/tfprof_output.pb.h"
 
 namespace tensorflow {
@@ -45,11 +44,11 @@ class TFMultiShow {
   virtual ~TFMultiShow() {}
   virtual void AddNode(TFGraphNode* node) = 0;
   virtual void Build() = 0;
-  const MultiGraphNodeProto& Show(const Options& opts);
+  const MultiGraphNodeProto& Show(const string& prefix, const Options& opts);
 
  protected:
   virtual const ShowMultiNode* ShowInternal(const Options& opts,
-                                           Timeline* timeline) = 0;
+                                            Timeline* timeline) = 0;
 
   bool LookUpCheckPoint(const string& name,
                         std::unique_ptr<TFProfTensor>* tensor);
@@ -126,4 +125,4 @@ class TFMultiShow {
 }  // namespace tfprof
 }  // namespace tensorflow
 
-#endif  // THIRD_PARTY_TENSORFLOW_CORE_PROFILER_INTERNAL_TFPROF_SHOW_MULTI_H_
+#endif  // TENSORFLOW_CORE_PROFILER_INTERNAL_TFPROF_SHOW_MULTI_H_

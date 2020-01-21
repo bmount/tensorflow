@@ -1,6 +1,6 @@
-##Options
+## Options
 
-###Overview
+### Overview
 
 For all tfprof views, the profiles are processed with the following procedures
 
@@ -35,14 +35,43 @@ For all tfprof views, the profiles are processed with the following procedures
 4) Finally, the filtered data structure is output in a format depending
    on the `-output` option.
 
-####Option Semantics In Different View
+#### Option Semantics In Different View
 options usually have the same semantics in different views. However, some
 can vary. For example `-max_depth` in scope view means the depth of
 name scope <b>tree</b>. In op view, it means the length of operation <b>list</b>.
 In graph view, in means the number of hops in the <b>graph</b>.
 
+### Times
 
-###Docs
+Most machines have multi-core CPUs. Some installs one or more accelerators.
+Each accelerator usually performs massive parallel processing. The profiler
+tracks the accumulated processing times. Hence, the accumulated processing
+time is likely larger than the time of each step.
+
+micros: This is the sum of cpu and accelerator times.
+accelerator_micros: This is the accelerator times.
+cpu_micros: This is the cpu times.
+
+### Memory
+
+Tensor memory are usually ref-counted. The memory is released when there is no
+more reference to it. It will be difficult to track the release of memory.
+Currently, profiler only tracks the allocation of memory. As a result, the
+accumulated memory request is usually larger than the peak memory of the overall
+model.
+
+It's recommended to generate timeline to see the allocator memory usage over
+time.
+
+`bytes`: The memory allocations requested by the operation.
+`peak_bytes`: The peak requested memory (not de-allocated) by the operation.
+`residual_bytes`: The memory requested by the operation and not de-allocated
+                when Compute finishes.
+`output_bytes`: The memory output by the operation. It's not necessarily requested
+              by the current operation. For example, it can be a tensor
+              forwarded from input to output, with in-place mutation.
+
+### Docs
 
 `-max_depth`: Show nodes that are at most this number of hops from starting node in the data structure.
 
@@ -71,20 +100,26 @@ accelerator_micros and cpu_micros. Note: cpu and accelerator can run in parallel
 
 `-order_by`: Order the results by [name|depth|bytes|peak_bytes|residual_bytes|output_bytes|micros|accelerator_micros|cpu_micros|params|float_ops|occurrence]
 
-`-account_type_regexes`: Account and display the nodes whose types match one of the type regexes specified. tfprof allow user to define extra operation types for graph nodes through tensorflow.tfprof.OpLogProto proto. regexes are comma-sperated.
+`-account_type_regexes`: Account and display the nodes whose types match one of
+the type regexes specified. tfprof allow user to define extra operation types
+for graph nodes through tensorflow.tfprof.OpLogProto proto. regexes are
+comma-separated.
 
 `-start_name_regexes`: Show node starting from the node that matches the regexes, recursively. regexes are comma-separated.
 
-`-trim_name_regexes`: Hide node starting from the node that matches the regexes, recursively, regexes are comma-seprated.
+`-trim_name_regexes`: Hide node starting from the node that matches the regexes,
+recursively, regexes are comma-separated.
 
-`-show_name_regexes`: Show node that match the regexes. regexes are comma-seprated.
+`-show_name_regexes`: Show node that match the regexes. regexes are
+comma-separated.
 
-`-hide_name_regexes`: Hide node that match the regexes. regexes are comma-seprated.
+`-hide_name_regexes`: Hide node that match the regexes. regexes are
+comma-separated.
 
 `-account_displayed_op_only`: If True, only account the statistics of ops eventually displayed. If False, account all op statistics matching -account_type_regexes recursively.
 
-
-Notes: See <b>overview</b> sesion on how does above options play with each other to decide the output and counting.
+Notes: See <b>overview</b> session on how does above options play with each
+other to decide the output and counting.
 
 `-select`: Comma-separated list of attributes to show. Supported attributes:
 [bytes|peak_bytes|residual_bytes|output_bytes|micros|accelerator_micros|cpu_micros|params|float_ops|occurrence|tensor_value|device|op_types|input_shapes].

@@ -13,50 +13,35 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include "tensorflow/core/platform/file_system.h"
+
 #include <sys/stat.h>
+
 #include <algorithm>
 #include <deque>
 
-#include "tensorflow/core/lib/core/errors.h"
-#include "tensorflow/core/lib/core/threadpool.h"
-#include "tensorflow/core/lib/gtl/map_util.h"
-#include "tensorflow/core/lib/gtl/stl_util.h"
-#include "tensorflow/core/lib/io/path.h"
-#include "tensorflow/core/lib/strings/str_util.h"
-#include "tensorflow/core/lib/strings/strcat.h"
 #include "tensorflow/core/platform/env.h"
-#include "tensorflow/core/platform/file_system.h"
+#include "tensorflow/core/platform/errors.h"
+#include "tensorflow/core/platform/path.h"
 #include "tensorflow/core/platform/platform.h"
-#include "tensorflow/core/platform/protobuf.h"
+#include "tensorflow/core/platform/str_util.h"
+#include "tensorflow/core/platform/strcat.h"
 
 namespace tensorflow {
 
-namespace {
-
-constexpr int kNumThreads = 8;
-
-// Run a function in parallel using a ThreadPool, but skip the ThreadPool
-// on the iOS platform due to its problems with more than a few threads.
-void ForEach(int first, int last, const std::function<void(int)>& f) {
-#if TARGET_OS_IPHONE
-  for (int i = first; i < last; i++) {
-    f(i);
-  }
-#else
-  int num_threads = std::min(kNumThreads, last - first);
-  thread::ThreadPool threads(Env::Default(), "ForEach", num_threads);
-  for (int i = first; i < last; i++) {
-    threads.Schedule([f, i] { f(i); });
-  }
-#endif
-}
-
-}  // anonymous namespace
-
-FileSystem::~FileSystem() {}
-
 string FileSystem::TranslateName(const string& name) const {
-  return io::CleanPath(name);
+  // If the name is empty, CleanPath returns "." which is incorrect and
+  // we should return the empty path instead.
+  if (name.empty()) return name;
+
+  // Otherwise, properly separate the URI components and clean the path one
+  StringPiece scheme, host, path;
+  io::ParseURI(name, &scheme, &host, &path);
+
+  // If `path` becomes empty, return `/` (`file://` should be `/`), not `.`.
+  if (path.empty()) return "/";
+
+  return io::CleanPath(path);
 }
 
 Status FileSystem::IsDirectory(const string& name) {
@@ -70,11 +55,7 @@ Status FileSystem::IsDirectory(const string& name) {
   return Status(tensorflow::error::FAILED_PRECONDITION, "Not a directory");
 }
 
-RandomAccessFile::~RandomAccessFile() {}
-
-WritableFile::~WritableFile() {}
-
-FileSystemRegistry::~FileSystemRegistry() {}
+void FileSystem::FlushCaches() {}
 
 bool FileSystem::FilesExist(const std::vector<string>& files,
                             std::vector<Status>* status) {
@@ -92,75 +73,6 @@ bool FileSystem::FilesExist(const std::vector<string>& files,
   return result;
 }
 
-Status FileSystem::GetMatchingPaths(const string& pattern,
-                                    std::vector<string>* results) {
-  results->clear();
-  // Find the fixed prefix by looking for the first wildcard.
-  string fixed_prefix = pattern.substr(0, pattern.find_first_of("*?[\\"));
-  string eval_pattern = pattern;
-  std::vector<string> all_files;
-  string dir = io::Dirname(fixed_prefix).ToString();
-  // If dir is empty then we need to fix up fixed_prefix and eval_pattern to
-  // include . as the top level directory.
-  if (dir.empty()) {
-    dir = ".";
-    fixed_prefix = io::JoinPath(dir, fixed_prefix);
-    eval_pattern = io::JoinPath(dir, pattern);
-  }
-
-  // Setup a BFS to explore everything under dir.
-  std::deque<string> dir_q;
-  dir_q.push_back(dir);
-  Status ret;  // Status to return.
-  // children_dir_status holds is_dir status for children. It can have three
-  // possible values: OK for true; FAILED_PRECONDITION for false; CANCELLED
-  // if we don't calculate IsDirectory (we might do that because there isn't
-  // any point in exploring that child path).
-  std::vector<Status> children_dir_status;
-  while (!dir_q.empty()) {
-    string current_dir = dir_q.front();
-    dir_q.pop_front();
-    std::vector<string> children;
-    Status s = GetChildren(current_dir, &children);
-    ret.Update(s);
-    if (children.empty()) continue;
-    // This IsDirectory call can be expensive for some FS. Parallelizing it.
-    children_dir_status.resize(children.size());
-    ForEach(0, children.size(), [this, &current_dir, &children, &fixed_prefix,
-                                 &children_dir_status](int i) {
-      const string child_path = io::JoinPath(current_dir, children[i]);
-      // In case the child_path doesn't start with the fixed_prefix then
-      // we don't need to explore this path.
-      if (!StringPiece(child_path).starts_with(fixed_prefix)) {
-        children_dir_status[i] =
-            Status(tensorflow::error::CANCELLED, "Operation not needed");
-      } else {
-        children_dir_status[i] = IsDirectory(child_path);
-      }
-    });
-    for (int i = 0; i < children.size(); ++i) {
-      const string child_path = io::JoinPath(current_dir, children[i]);
-      // If the IsDirectory call was cancelled we bail.
-      if (children_dir_status[i].code() == tensorflow::error::CANCELLED) {
-        continue;
-      }
-      // If the child is a directory add it to the queue.
-      if (children_dir_status[i].ok()) {
-        dir_q.push_back(child_path);
-      }
-      all_files.push_back(child_path);
-    }
-  }
-
-  // Match all obtained files to the input pattern.
-  for (const auto& f : all_files) {
-    if (Env::Default()->MatchPath(f, eval_pattern)) {
-      results->push_back(f);
-    }
-  }
-  return ret;
-}
-
 Status FileSystem::DeleteRecursively(const string& dirname,
                                      int64* undeleted_files,
                                      int64* undeleted_dirs) {
@@ -175,6 +87,14 @@ Status FileSystem::DeleteRecursively(const string& dirname,
     (*undeleted_dirs)++;
     return exists_status;
   }
+
+  // If given path to a single file, we should just delete it.
+  if (!IsDirectory(dirname).ok()) {
+    Status delete_root_status = DeleteFile(dirname);
+    if (!delete_root_status.ok()) (*undeleted_files)++;
+    return delete_root_status;
+  }
+
   std::deque<string> dir_q;      // Queue for the BFS
   std::vector<string> dir_list;  // List of all dirs discovered
   dir_q.push_back(dirname);
@@ -230,15 +150,26 @@ Status FileSystem::RecursivelyCreateDir(const string& dirname) {
   io::ParseURI(dirname, &scheme, &host, &remaining_dir);
   std::vector<StringPiece> sub_dirs;
   while (!remaining_dir.empty()) {
-    Status status = FileExists(io::CreateURI(scheme, host, remaining_dir));
-    if (status.ok()) {
-      break;
+    std::string current_entry = io::CreateURI(scheme, host, remaining_dir);
+    Status exists_status = FileExists(current_entry);
+    if (exists_status.ok()) {
+      // FileExists cannot differentiate between existence of a file or a
+      // directory, hence we need an additional test as we must not assume that
+      // a path to a file is a path to a parent directory.
+      Status directory_status = IsDirectory(current_entry);
+      if (directory_status.ok()) {
+        break;  // We need to start creating directories from here.
+      } else if (directory_status.code() == tensorflow::error::UNIMPLEMENTED) {
+        return directory_status;
+      } else {
+        return errors::FailedPrecondition(remaining_dir, " is not a directory");
+      }
     }
-    if (status.code() != error::Code::NOT_FOUND) {
-      return status;
+    if (exists_status.code() != error::Code::NOT_FOUND) {
+      return exists_status;
     }
     // Basename returns "" for / ending dirs.
-    if (!remaining_dir.ends_with("/")) {
+    if (!str_util::EndsWith(remaining_dir, "/")) {
       sub_dirs.push_back(io::Basename(remaining_dir));
     }
     remaining_dir = io::Dirname(remaining_dir);
@@ -248,7 +179,7 @@ Status FileSystem::RecursivelyCreateDir(const string& dirname) {
   std::reverse(sub_dirs.begin(), sub_dirs.end());
 
   // Now create the directories.
-  string built_path = remaining_dir.ToString();
+  string built_path(remaining_dir);
   for (const StringPiece sub_dir : sub_dirs) {
     built_path = io::JoinPath(built_path, sub_dir);
     Status status = CreateDir(io::CreateURI(scheme, host, built_path));
@@ -257,6 +188,10 @@ Status FileSystem::RecursivelyCreateDir(const string& dirname) {
     }
   }
   return Status::OK();
+}
+
+Status FileSystem::CopyFile(const string& src, const string& target) {
+  return FileSystemCopyFile(this, src, this, target);
 }
 
 }  // namespace tensorflow

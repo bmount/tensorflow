@@ -19,6 +19,7 @@ limitations under the License.
 #include "tensorflow/core/lib/io/random_inputstream.h"
 #include "tensorflow/core/platform/env.h"
 #include "tensorflow/core/platform/test.h"
+#include "tensorflow/core/platform/test_benchmark.h"
 
 namespace tensorflow {
 namespace io {
@@ -162,7 +163,7 @@ TEST(BufferedInputStream, ReadNBytes) {
   for (auto buf_size : BufferSizes()) {
     std::unique_ptr<RandomAccessInputStream> input_stream(
         new RandomAccessInputStream(file.get()));
-    string read;
+    tstring read;
     BufferedInputStream in(input_stream.get(), buf_size);
     EXPECT_EQ(0, in.Tell());
     TF_ASSERT_OK(in.ReadNBytes(3, &read));
@@ -199,7 +200,7 @@ TEST(BufferedInputStream, SkipNBytes) {
   for (auto buf_size : BufferSizes()) {
     std::unique_ptr<RandomAccessInputStream> input_stream(
         new RandomAccessInputStream(file.get()));
-    string read;
+    tstring read;
     BufferedInputStream in(input_stream.get(), buf_size);
     EXPECT_EQ(0, in.Tell());
     TF_ASSERT_OK(in.SkipNBytes(3));
@@ -234,7 +235,7 @@ TEST(BufferedInputStream, ReadNBytesRandomAccessFile) {
   TF_ASSERT_OK(env->NewRandomAccessFile(fname, &file));
 
   for (auto buf_size : BufferSizes()) {
-    string read;
+    tstring read;
     BufferedInputStream in(file.get(), buf_size);
     EXPECT_EQ(0, in.Tell());
     TF_ASSERT_OK(in.ReadNBytes(3, &read));
@@ -269,7 +270,7 @@ TEST(BufferedInputStream, SkipNBytesRandomAccessFile) {
   TF_ASSERT_OK(env->NewRandomAccessFile(fname, &file));
 
   for (auto buf_size : BufferSizes()) {
-    string read;
+    tstring read;
     BufferedInputStream in(file.get(), buf_size);
     EXPECT_EQ(0, in.Tell());
     TF_ASSERT_OK(in.SkipNBytes(3));
@@ -306,7 +307,7 @@ TEST(BufferedInputStream, Seek) {
   for (auto buf_size : BufferSizes()) {
     std::unique_ptr<RandomAccessInputStream> input_stream(
         new RandomAccessInputStream(file.get()));
-    string read;
+    tstring read;
     BufferedInputStream in(input_stream.get(), buf_size);
 
     // Seek forward
@@ -336,7 +337,6 @@ TEST(BufferedInputStream, ReadAll_Empty) {
 
   for (auto buf_size : BufferSizes()) {
     RandomAccessInputStream input_stream(file.get());
-    string read;
     BufferedInputStream in(&input_stream, buf_size);
     string contents;
     TF_ASSERT_OK(in.ReadAll(&contents));
@@ -354,13 +354,51 @@ TEST(BufferedInputStream, ReadAll_Text) {
 
   for (auto buf_size : BufferSizes()) {
     RandomAccessInputStream input_stream(file.get());
-    string read;
     BufferedInputStream in(&input_stream, buf_size);
     string contents;
     TF_ASSERT_OK(in.ReadAll(&contents));
     EXPECT_EQ(expected, contents);
   }
 }
+
+void BM_BufferedReaderSmallReads(const int iters, const int buff_size,
+                                 const int file_size) {
+  testing::StopTiming();
+  Env* env = Env::Default();
+  string fname = testing::TmpDir() + "/buffered_inputstream_test";
+
+  const string file_elem = "0123456789";
+  std::unique_ptr<WritableFile> write_file;
+  TF_ASSERT_OK(env->NewWritableFile(fname, &write_file));
+  for (int i = 0; i < file_size; ++i) {
+    TF_ASSERT_OK(write_file->Append(file_elem));
+  }
+  TF_ASSERT_OK(write_file->Close());
+
+  std::unique_ptr<RandomAccessFile> file;
+  TF_ASSERT_OK(env->NewRandomAccessFile(fname, &file));
+
+  tstring result;
+  testing::StartTiming();
+
+  for (int itr = 0; itr < iters; ++itr) {
+    BufferedInputStream in(file.get(), buff_size);
+    for (int64 i = 0; i < 10 * file_size; ++i) {
+      TF_ASSERT_OK(in.ReadNBytes(1, &result))
+          << "i: " << i << " itr: " << itr << " buff_size: " << buff_size
+          << " file size: " << file_size;
+    }
+  }
+}
+BENCHMARK(BM_BufferedReaderSmallReads)
+    ->ArgPair(1, 5)
+    ->ArgPair(1, 1024)
+    ->ArgPair(10, 5)
+    ->ArgPair(10, 1024)
+    ->ArgPair(1024, 1024)
+    ->ArgPair(1024 * 1024, 1024)
+    ->ArgPair(1024 * 1024, 1024 * 1024)
+    ->ArgPair(256 * 1024 * 1024, 1024);
 
 }  // anonymous namespace
 }  // namespace io

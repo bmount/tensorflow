@@ -13,9 +13,10 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef THIRD_PARTY_TENSORFLOW_CORE_KERNELS_QUANTIZATION_UTILS_H_
-#define THIRD_PARTY_TENSORFLOW_CORE_KERNELS_QUANTIZATION_UTILS_H_
+#ifndef TENSORFLOW_CORE_KERNELS_QUANTIZATION_UTILS_H_
+#define TENSORFLOW_CORE_KERNELS_QUANTIZATION_UTILS_H_
 
+#include <cmath>
 #define EIGEN_USE_THREADS
 
 // This is a set of functions that standardizes how quantized values are
@@ -102,7 +103,7 @@ float QuantizedToFloat(T input, float range_min, float range_max) {
   // range_scale to a float, otherwise range_min_rounded might be slightly
   // different.
   const double range_min_rounded =
-      round(range_min / static_cast<float>(range_scale)) *
+      std::round(range_min / static_cast<float>(range_scale)) *
       static_cast<float>(range_scale);
   const double result = range_min_rounded + (offset_input * range_scale);
   return static_cast<float>(result);
@@ -170,7 +171,8 @@ struct QuantizedToFloatStruct {
         range_scale((range_max - range_min) / (number_of_steps - 1.0)),
         range_min_rounded(range_max == range_min
                               ? range_min
-                              : round(range_min / range_scale) * range_scale) {}
+                              : std::round(range_min / range_scale) *
+                                    range_scale) {}
 
   const float range_min;
   const float range_scale;
@@ -207,7 +209,7 @@ struct FloatToQuantizedStruct {
         range_scale(range_max == range_min
                         ? 0.0
                         : (number_of_steps - 1.0) / (range_max - range_min)),
-        range_min_scaled(round(range_min * range_scale)) {}
+        range_min_scaled(std::round(range_min * range_scale)) {}
 
   const float range_min;
   const float range_scale;
@@ -273,8 +275,8 @@ inline void RequantizeManyInNewRangeReference(const qint32* input, int64 count,
     const int64 offset_intermediate = fp_value - output_offset_fp;
     const int64 round_intermediate = offset_intermediate + rounding_delta;
     int64 quantized_int64 = round_intermediate >> fp_shift;
-    quantized_int64 = std::max(quantized_int64, 0LL);
-    quantized_int64 = std::min(quantized_int64, 255LL);
+    quantized_int64 = std::max(quantized_int64, int64{0});
+    quantized_int64 = std::min(quantized_int64, int64{255});
     output[index] = static_cast<quint8>(static_cast<int32>(quantized_int64));
   }
 }
@@ -897,8 +899,7 @@ void QuantizedAdd(const Eigen::ThreadPoolDevice& device, const Tensor& input,
   }
 }
 
-// See gemmlowp/internal/multi_thread_gemm.h for definitions of
-// Prepare, Wait, StartWorker, and CreateWorkers.
+// See gemmlowp/internal/multi_thread_gemm.h for the semantics of Execute.
 class TensorflowGemmlowpWorkersPool {
  public:
   TensorflowGemmlowpWorkersPool(thread::ThreadPool* workers)
@@ -911,28 +912,25 @@ class TensorflowGemmlowpWorkersPool {
     counter_to_decrement_when_ready_.Reset(0);
   }
 
-  void Prepare(int workers_count) {
-    counter_to_decrement_when_ready_.Reset(workers_count);
-  }
-
-  void Wait() { counter_to_decrement_when_ready_.Wait(); }
-
-  void StartWorker(int index, gemmlowp::Task* task) {
-    CHECK(workers_ != nullptr);
-    // <index> is ignored - the tensorflow threadpool does not support assigning
-    // to a specific thread.
-    workers_->Schedule([this, task]() {
-      // TODO(cwhipkey): get a local_allocator from a thread local.
-      gemmlowp::Allocator local_allocator;
-      CHECK(task != nullptr);
-      task->local_allocator = &local_allocator;
-      task->Run();
+  void Execute(const std::vector<gemmlowp::Task*>& tasks) {
+    assert(!tasks.empty());
+    assert(workers_ != nullptr);
+    counter_to_decrement_when_ready_.Reset(tasks.size());
+    for (gemmlowp::Task* task : tasks) {
+      workers_->Schedule([this, task]() {
+        // TODO(cwhipkey): get a local_allocator from a thread local storage.
+        gemmlowp::Allocator local_allocator;
+        CHECK(task != nullptr);
+        task->local_allocator = &local_allocator;
+        task->Run();
+        counter_to_decrement_when_ready_.DecrementCount();
+      });
+    }
+    counter_to_decrement_when_ready_.Wait();
+    for (gemmlowp::Task* task : tasks) {
       delete task;
-      counter_to_decrement_when_ready_.DecrementCount();
-    });
+    }
   }
-
-  void CreateWorkers(std::size_t workers_count) {}
 
  private:
   thread::ThreadPool* const workers_;
@@ -960,4 +958,4 @@ class TensorflowGemmContext : public gemmlowp::MultiThreadGemmContextBase {
 
 }  // namespace tensorflow
 
-#endif  // THIRD_PARTY_TENSORFLOW_CORE_KERNELS_QUANTIZATION_UTILS_H_
+#endif  // TENSORFLOW_CORE_KERNELS_QUANTIZATION_UTILS_H_

@@ -13,8 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_KERNELS_MIRROR_PAD_OP_H_
-#define TENSORFLOW_KERNELS_MIRROR_PAD_OP_H_
+#ifndef TENSORFLOW_CORE_KERNELS_MIRROR_PAD_OP_H_
+#define TENSORFLOW_CORE_KERNELS_MIRROR_PAD_OP_H_
 
 #include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
 #include "tensorflow/core/framework/tensor_types.h"
@@ -64,9 +64,8 @@ class TensorMirrorPadOp
       StorageKind;
   typedef typename Eigen::internal::traits<TensorMirrorPadOp>::Index Index;
 
-  EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE
-  TensorMirrorPadOp(const XprType& expr, const PaddingDimensions& padding_dims,
-                    Index offset)
+  EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE TensorMirrorPadOp(
+      const XprType& expr, const PaddingDimensions& padding_dims, Index offset)
       : xpr_(expr), padding_dims_(padding_dims), offset_(offset) {}
 
   EIGEN_DEVICE_FUNC
@@ -104,10 +103,16 @@ struct TensorEvaluator<const TensorMirrorPadOp<PaddingDimensions, ArgType>,
     IsAligned = false,
     PacketAccess = TensorEvaluator<ArgType, Device>::PacketAccess,
     BlockAccess = false,
+    BlockAccessV2 = false,
+    PreferBlockAccess = false,
     Layout = TensorEvaluator<ArgType, Device>::Layout,
     CoordAccess = true,
     RawAccess = false
   };
+
+  //===- Tensor block evaluation strategy (see TensorBlock.h) -------------===//
+  typedef internal::TensorBlockNotImplemented TensorBlock;
+  //===--------------------------------------------------------------------===//
 
   EIGEN_DEVICE_FUNC EIGEN_STRONG_INLINE TensorEvaluator(const XprType& op,
                                                         const Device& device)
@@ -218,7 +223,8 @@ struct TensorEvaluator<const TensorMirrorPadOp<PaddingDimensions, ArgType>,
     const Index right =
         (dimensions_[dim] - padding_[dim].second) * output_strides_[dim];
 
-    if (left <= index && (index + kPacketSize - 1) < right) {
+    const Index index_mod = index % (dimensions_[dim] * output_strides_[dim]);
+    if (left <= index_mod && (index_mod + kPacketSize - 1) < right) {
       return impl_.template packet<Unaligned>(input_index);
     }
 
@@ -336,12 +342,12 @@ namespace functor {
 
 // offset argument must be either 0 or 1. This controls whether the boundary
 // values are replicated (offset == 0) or not replicated (offset == 1).
-template <typename Device, typename T, int Dims>
+template <typename Device, typename T, typename Tpaddings, int Dims>
 struct MirrorPad {
   void operator()(const Device& device,
                   typename TTypes<T, Dims, int32>::Tensor output,
                   typename TTypes<T, Dims, int32>::ConstTensor input,
-                  TTypes<int32>::ConstMatrix padding, int offset) {
+                  typename TTypes<Tpaddings>::ConstMatrix padding, int offset) {
     Eigen::array<Eigen::IndexPair<int32>, Dims> padding_dims;
 
     for (int i = 0; i < Dims; ++i) {
@@ -363,12 +369,12 @@ struct MirrorPad {
 
 // offset argument must be either 0 or 1. This controls whether the boundary
 // values are replicated (offset == 0) or not replicated (offset == 1).
-template <typename Device, typename T, int Dims>
+template <typename Device, typename T, typename Tpaddings, int Dims>
 struct MirrorPadGrad {
   void operator()(const Device& device,
                   typename TTypes<T, Dims, int32>::Tensor output,
                   typename TTypes<T, Dims, int32>::ConstTensor input,
-                  TTypes<int32>::ConstMatrix paddings, int offset,
+                  typename TTypes<Tpaddings>::ConstMatrix paddings, int offset,
                   typename TTypes<T, Dims, int32>::Tensor scratch) {
     // Copy the gradient input into the scratch buffer.
     scratch.device(device) = input;
@@ -438,4 +444,4 @@ struct MirrorPadGrad {
 }  // namespace functor
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_KERNELS_MIRROR_PAD_OP_H_
+#endif  // TENSORFLOW_CORE_KERNELS_MIRROR_PAD_OP_H_

@@ -28,8 +28,8 @@ limitations under the License.
 #include <sys/types.h>
 #include <unistd.h>
 
-#include "tensorflow/core/lib/strings/stringprintf.h"
 #include "tensorflow/core/platform/logging.h"
+#include "tensorflow/core/platform/stringprintf.h"
 
 namespace tensorflow {
 namespace profile_utils {
@@ -118,9 +118,10 @@ int64 AndroidArmV7ACpuUtilsHelper::ReadCpuFrequencyFile(
   const int retval = fscanf(fp, "%lld", &freq_in_khz);
   if (retval < 0) {
     LOG(WARNING) << "Failed to \"" << file_path << "\"";
+    fclose(fp);
     return INVALID_CPU_FREQUENCY;
   }
-  pclose(fp);
+  fclose(fp);
   return freq_in_khz * 1000;  // The file contains cpu frequency in khz
 }
 

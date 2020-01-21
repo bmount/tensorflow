@@ -16,10 +16,10 @@ limitations under the License.
 #include "tensorflow/core/profiler/internal/tfprof_graph.h"
 
 #include <stdio.h>
+
 #include <utility>
 
-#include "tensorflow/core/lib/strings/strcat.h"
-#include "tensorflow/core/lib/strings/stringprintf.h"
+#include "absl/strings/str_format.h"
 #include "tensorflow/core/platform/regexp.h"
 #include "tensorflow/core/profiler/internal/tfprof_constants.h"
 #include "tensorflow/core/profiler/internal/tfprof_tensor.h"
@@ -30,8 +30,8 @@ GraphNode* TFGraph::CreateParentNode(const string& name) {
   node_defs_.push_back(std::unique_ptr<NodeDef>(new NodeDef()));
   node_defs_.back()->set_name(name);
   node_defs_.back()->set_op(kTFGraphParent);
-  parent_nodes_[name] =
-      std::unique_ptr<TFGraphNode>(new TFGraphNode(node_defs_.back().get()));
+  parent_nodes_[name] = std::unique_ptr<TFGraphNode>(
+      new TFGraphNode(node_defs_.back().get(), -1, nullptr));
   nodes_map_[name] =
       std::unique_ptr<GraphNode>(new GraphNode(parent_nodes_[name].get()));
   return nodes_map_[name].get();
@@ -49,11 +49,11 @@ void TFGraph::Build() {
   // Filter out the root nodes (node not input of any other node).
   for (auto it = nodes_map_.begin(); it != nodes_map_.end(); it++) {
     GraphNode* node = it->second.get();
-    const std::map<int, TFGraphNode*>& inputs = node->node->inputs();
+    const std::map<int, string>& inputs = node->node->inputs();
     for (auto inputs_it = inputs.cbegin(); inputs_it != inputs.cend();
          inputs_it++) {
-      nonroots.insert(inputs_it->second->name());
-      auto child_it = nodes_map_.find(inputs_it->second->name());
+      nonroots.insert(inputs_it->second);
+      auto child_it = nodes_map_.find(inputs_it->second);
       if (child_it != nodes_map_.end()) {
         node->children.push_back(child_it->second.get());
       }
@@ -74,13 +74,14 @@ const ShowNode* TFGraph::ShowInternal(const Options& opts, Timeline* timeline) {
   root_->show_children.clear();
 
   if (opts.output_type == kOutput[3]) {
-    fprintf(stderr, "Only 'code' view supports pprof output now.\n");
+    absl::FPrintF(stderr, "Only 'code' view supports pprof output now.\n");
     return root_;
   }
   if (timeline && timeline->step() < 0) {
     // TODO(xpan): Maybe pick a default step for users.
-    fprintf(stderr,
-            "Must specify -step option to generate timeline in graph view.\n");
+    absl::FPrintF(
+        stderr,
+        "Must specify -step option to generate timeline in graph view.\n");
     return root_;
   }
   // 1. Account and aggregate the stats based on the graph structure.
@@ -188,9 +189,8 @@ std::vector<GraphNode*> TFGraph::PrintGraph(const std::vector<GraphNode*> roots,
           node->AggregateTotalStats(sc);
         }
       }
-      node->formatted_str =
-          strings::Printf("%s%s\n", string(last_ident, ' ').c_str(),
-                          FormatNode(node, opts).c_str());
+      node->formatted_str = absl::StrFormat(
+          "%s%s\n", std::string(last_ident, ' '), FormatNode(node, opts));
 
       if (opts.select.find(kShown[4]) != opts.select.end()) {
         std::unique_ptr<TFProfTensor> tfprof_tensor;

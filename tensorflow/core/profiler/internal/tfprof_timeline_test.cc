@@ -23,12 +23,12 @@ limitations under the License.
 #include "tensorflow/core/lib/io/path.h"
 #include "tensorflow/core/platform/env.h"
 #include "tensorflow/core/platform/test.h"
-#include "tensorflow/core/protobuf/config.pb.h"
 #include "tensorflow/core/profiler/internal/tfprof_constants.h"
-#include "tensorflow/core/profiler/internal/tfprof_options.h"
 #include "tensorflow/core/profiler/internal/tfprof_utils.h"
 #include "tensorflow/core/profiler/tfprof_log.pb.h"
+#include "tensorflow/core/profiler/tfprof_options.h"
 #include "tensorflow/core/profiler/tfprof_output.pb.h"
+#include "tensorflow/core/protobuf/config.pb.h"
 
 namespace tensorflow {
 namespace tfprof {
@@ -70,8 +70,8 @@ TEST_F(TFProfTimelineTest, GraphView) {
   tf_stats_->ShowGraphNode("graph", opts);
 
   string dump_str;
-  TF_CHECK_OK(ReadFileToString(Env::Default(), dump_file, &dump_str));
-  EXPECT_EQ(16947107375505024864ull, Hash64(dump_str));
+  TF_CHECK_OK(ReadFileToString(Env::Default(), dump_file + "_0", &dump_str));
+  EXPECT_EQ(16556121177519539380ull, Hash64(dump_str));
 }
 
 TEST_F(TFProfTimelineTest, ScopeView) {
@@ -84,8 +84,8 @@ TEST_F(TFProfTimelineTest, ScopeView) {
   tf_stats_->ShowGraphNode("scope", opts);
 
   string dump_str;
-  TF_CHECK_OK(ReadFileToString(Env::Default(), dump_file, &dump_str));
-  EXPECT_EQ(2710044785377031280ull, Hash64(dump_str));
+  TF_CHECK_OK(ReadFileToString(Env::Default(), dump_file + "_0", &dump_str));
+  EXPECT_EQ(17545174915963890413ull, Hash64(dump_str));
 }
 
 // TODO(xpan): tfprof_log is too large to include in testdata when adding

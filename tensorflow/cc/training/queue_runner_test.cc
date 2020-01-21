@@ -25,11 +25,11 @@ limitations under the License.
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_shape.h"
 #include "tensorflow/core/framework/types.pb.h"
-#include "tensorflow/core/lib/core/error_codes.pb.h"
 #include "tensorflow/core/lib/core/notification.h"
 #include "tensorflow/core/lib/core/status_test_util.h"
 #include "tensorflow/core/platform/env.h"
 #include "tensorflow/core/platform/test.h"
+#include "tensorflow/core/protobuf/error_codes.pb.h"
 #include "tensorflow/core/protobuf/queue_runner.pb.h"
 #include "tensorflow/core/public/session.h"
 
@@ -373,7 +373,7 @@ TEST(QueueRunnerTest, RunMetaDataTest) {
   std::unique_ptr<QueueRunner> qr;
   TF_EXPECT_OK(QueueRunner::New(queue_runner_def, &qr));
   RunOptions run_options;
-  TF_CHECK_OK(qr->StartAndCollectCostGraph(session.get(), &run_options));
+  TF_CHECK_OK(qr->StartAndCollectCostGraph(session.get(), run_options));
 
   // Make sure there was at least one element enqueued in q0: this prevents a
   // race condition where we close the queue before it was populated.

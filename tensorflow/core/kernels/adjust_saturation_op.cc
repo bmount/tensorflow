@@ -12,6 +12,13 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
+#define EIGEN_USE_THREADS
+
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
+#define EIGEN_USE_GPU
+#endif
+
+#include "tensorflow/core/kernels/adjust_saturation_op.h"
 #include <memory>
 #include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
 #include "tensorflow/core/framework/op_kernel.h"
@@ -74,7 +81,7 @@ class AdjustSaturationOpBase : public OpKernel {
   }
 };
 
-template <class Device>
+template <class Device, typename T>
 class AdjustSaturationOp;
 
 namespace internal {
@@ -166,7 +173,7 @@ static void hsv_to_rgb(float h, float s, float v, float* r, float* g,
 }  // namespace internal
 
 template <>
-class AdjustSaturationOp<CPUDevice> : public AdjustSaturationOpBase {
+class AdjustSaturationOp<CPUDevice, float> : public AdjustSaturationOpBase {
  public:
   explicit AdjustSaturationOp(OpKernelConstruction* context)
       : AdjustSaturationOpBase(context) {}
@@ -185,8 +192,9 @@ class AdjustSaturationOp<CPUDevice> : public AdjustSaturationOpBase {
     const DeviceBase::CpuWorkerThreads& worker_threads =
         *context->device()->tensorflow_cpu_worker_threads();
     Shard(worker_threads.num_threads, worker_threads.workers, channel_count,
-          kCostPerChannel, [channel_count, &input_data, &output_data, scale_h](
-                               int64 start_channel, int64 end_channel) {
+          kCostPerChannel,
+          [&input_data, &output_data, scale_h](int64 start_channel,
+                                               int64 end_channel) {
             const float* p = input_data.data() + start_channel * kChannelSize;
             float* q = output_data.data() + start_channel * kChannelSize;
             for (int i = start_channel; i < end_channel; i++) {
@@ -203,7 +211,46 @@ class AdjustSaturationOp<CPUDevice> : public AdjustSaturationOpBase {
   }
 };
 
-REGISTER_KERNEL_BUILDER(Name("AdjustSaturation").Device(DEVICE_CPU),
-                        AdjustSaturationOp<CPUDevice>);
+REGISTER_KERNEL_BUILDER(
+    Name("AdjustSaturation").Device(DEVICE_CPU).TypeConstraint<float>("T"),
+    AdjustSaturationOp<CPUDevice, float>);
+
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
+template <typename T>
+class AdjustSaturationOp<GPUDevice, T> : public AdjustSaturationOpBase {
+ public:
+  explicit AdjustSaturationOp(OpKernelConstruction* context)
+      : AdjustSaturationOpBase(context) {}
+
+  void DoCompute(OpKernelContext* context,
+                 const ComputeOptions& options) override {
+    const Tensor* input = options.input;
+    const Tensor* scale = options.scale;
+    Tensor* output = options.output;
+    const int64 number_of_elements = input->NumElements();
+    GPUDevice device = context->eigen_gpu_device();
+    const auto stream = device.stream();
+    OP_REQUIRES(context, stream, errors::Internal("No GPU stream available."));
+    if (number_of_elements > 0) {
+      const T* input_data = input->flat<T>().data();
+      const float* scale_data = scale->flat<float>().data();
+      T* const output_data = output->flat<T>().data();
+      functor::AdjustSaturationGPU<T>()(&device, number_of_elements, input_data,
+                                        scale_data, output_data);
+    }
+  }
+};
+
+#define REGISTER_GPU(T)                                                   \
+  REGISTER_KERNEL_BUILDER(                                                \
+      Name("AdjustSaturation").Device(DEVICE_GPU).TypeConstraint<T>("T"), \
+      AdjustSaturationOp<GPUDevice, T>);
+
+REGISTER_GPU(float)
+REGISTER_GPU(Eigen::half)
+
+#undef REGISTER_GPU
+
+#endif
 
 }  // namespace tensorflow

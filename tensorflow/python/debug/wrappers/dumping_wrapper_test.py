@@ -19,13 +19,11 @@ from __future__ import print_function
 
 import glob
 import os
-import shutil
 import tempfile
 import threading
 
 from tensorflow.python.client import session
 from tensorflow.python.debug.lib import debug_data
-from tensorflow.python.debug.lib import stepper
 from tensorflow.python.debug.wrappers import dumping_wrapper
 from tensorflow.python.debug.wrappers import framework
 from tensorflow.python.debug.wrappers import hooks
@@ -33,6 +31,7 @@ from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
 from tensorflow.python.framework import test_util
+from tensorflow.python.lib.io import file_io
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import state_ops
 from tensorflow.python.ops import variables
@@ -41,12 +40,13 @@ from tensorflow.python.platform import googletest
 from tensorflow.python.training import monitored_session
 
 
+@test_util.run_v1_only("b/120545219")
 class DumpingDebugWrapperSessionTest(test_util.TensorFlowTestCase):
 
   def setUp(self):
     self.session_root = tempfile.mkdtemp()
 
-    self.v = variables.Variable(10.0, dtype=dtypes.float32, name="v")
+    self.v = variables.VariableV1(10.0, dtype=dtypes.float32, name="v")
     self.delta = constant_op.constant(1.0, dtype=dtypes.float32, name="delta")
     self.eta = constant_op.constant(-1.4, dtype=dtypes.float32, name="eta")
     self.inc_v = state_ops.assign_add(self.v, self.delta, name="inc_v")
@@ -61,7 +61,7 @@ class DumpingDebugWrapperSessionTest(test_util.TensorFlowTestCase):
   def tearDown(self):
     ops.reset_default_graph()
     if os.path.isdir(self.session_root):
-      shutil.rmtree(self.session_root)
+      file_io.delete_recursively(self.session_root)
 
   def _assert_correct_run_subdir_naming(self, run_subdir):
     self.assertStartsWith(run_subdir, "run_")
@@ -110,6 +110,20 @@ class DumpingDebugWrapperSessionTest(test_util.TensorFlowTestCase):
 
     self.assertEqual(repr(self.inc_v), dump.run_fetches_info)
     self.assertEqual(repr(None), dump.run_feed_keys_info)
+
+  def testDumpingOnASingleRunWorksWithRelativePathForDebugDumpDir(self):
+    sess = dumping_wrapper.DumpingDebugWrapperSession(
+        self.sess, session_root=self.session_root, log_usage=False)
+    sess.run(self.inc_v)
+    dump_dirs = glob.glob(os.path.join(self.session_root, "run_*"))
+    cwd = os.getcwd()
+    try:
+      os.chdir(self.session_root)
+      dump = debug_data.DebugDumpDir(
+          os.path.relpath(dump_dirs[0], self.session_root))
+      self.assertAllClose([10.0], dump.get_tensors("v", 0, "DebugIdentity"))
+    finally:
+      os.chdir(cwd)
 
   def testDumpingOnASingleRunWithFeedDictWorks(self):
     sess = dumping_wrapper.DumpingDebugWrapperSession(
@@ -350,12 +364,14 @@ class DumpingDebugWrapperSessionTest(test_util.TensorFlowTestCase):
         thread_name_filter=r"MainThread$")
 
     self.assertAllClose(1.0, sess.run(self.delta))
+    child_thread_result = []
     def child_thread_job():
-      sess.run(sess.run(self.eta))
+      child_thread_result.append(sess.run(self.eta))
 
     thread = threading.Thread(name="ChildThread", target=child_thread_job)
     thread.start()
     thread.join()
+    self.assertAllClose([-1.4], child_thread_result)
 
     dump_dirs = glob.glob(os.path.join(self.session_root, "run_*"))
     self.assertEqual(1, len(dump_dirs))
@@ -363,15 +379,10 @@ class DumpingDebugWrapperSessionTest(test_util.TensorFlowTestCase):
     self.assertEqual(1, dump.size)
     self.assertEqual("delta", dump.dumped_tensor_data[0].node_name)
 
-  def testCallingInvokeNodeStepperOnDumpingWrapperRaisesException(self):
+  def testDumpingWrapperWithEmptyFetchWorks(self):
     sess = dumping_wrapper.DumpingDebugWrapperSession(
         self.sess, session_root=self.session_root, log_usage=False)
-    node_stepper = stepper.NodeStepper(self.sess, self.inc_v)
-    with self.assertRaisesRegexp(
-        NotImplementedError,
-        r"NonInteractiveDebugWrapperSession does not support node-stepper "
-        r"mode\."):
-      sess.invoke_node_stepper(node_stepper)
+    sess.run([])
 
 
 if __name__ == "__main__":

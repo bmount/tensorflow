@@ -26,7 +26,7 @@ import tensorflow as tf
 from tensorflow.core.example import example_pb2
 from tensorflow.python.lib.io import file_io
 
-flags = tf.app.flags
+flags = tf.compat.v1.app.flags
 flags.DEFINE_string("gcs_bucket_url", "",
                     "The URL to the GCS bucket in which the temporary "
                     "tfrecord file is to be written and read, e.g., "
@@ -34,6 +34,7 @@ flags.DEFINE_string("gcs_bucket_url", "",
 flags.DEFINE_integer("num_examples", 10, "Number of examples to generate")
 
 FLAGS = flags.FLAGS
+
 
 def create_examples(num_examples, input_mean):
   """Create ExampleProto's containing data."""
@@ -48,6 +49,7 @@ def create_examples(num_examples, input_mean):
     ex.features.feature["inputs"].float_list.value.append(inputs[row, 0])
     examples.append(ex)
   return examples
+
 
 def create_dir_test():
   """Verifies file_io directory handling methods."""
@@ -122,6 +124,7 @@ def create_dir_test():
   print("Deleted directory recursively %s in %s milliseconds" % (
       dir_name, elapsed_ms))
 
+
 def create_object_test():
   """Verifies file_io's object manipulation methods ."""
   starttime_ms = int(round(time.time() * 1000))
@@ -142,7 +145,8 @@ def create_object_test():
     print("Creating file %s." % file_name)
     file_io.write_string_to_file(file_name, "test file creation.")
   elapsed_ms = int(round(time.time() * 1000)) - starttime_ms
-  print("Created %d files in %s milliseconds" % (len(files_to_create), elapsed_ms))
+  print("Created %d files in %s milliseconds" % (
+      len(files_to_create), elapsed_ms))
 
   # Listing files of pattern1.
   list_files_pattern = "%s/test_file*.txt" % dir_name
@@ -185,7 +189,9 @@ def create_object_test():
   file_io.delete_recursively(dir_name)
 
 
-if __name__ == "__main__":
+def main(argv):
+  del argv  # Unused.
+
   # Sanity check on the GCS bucket URL.
   if not FLAGS.gcs_bucket_url or not FLAGS.gcs_bucket_url.startswith("gs://"):
     print("ERROR: Invalid GCS bucket URL: \"%s\"" % FLAGS.gcs_bucket_url)
@@ -200,7 +206,7 @@ if __name__ == "__main__":
   # Verify that writing to the records file in GCS works.
   print("\n=== Testing writing and reading of GCS record file... ===")
   example_data = create_examples(FLAGS.num_examples, 5)
-  with tf.python_io.TFRecordWriter(input_path) as hf:
+  with tf.io.TFRecordWriter(input_path) as hf:
     for e in example_data:
       hf.write(e.SerializeToString())
 
@@ -208,9 +214,9 @@ if __name__ == "__main__":
 
   # Verify that reading from the tfrecord file works and that
   # tf_record_iterator works.
-  record_iter = tf.python_io.tf_record_iterator(input_path)
+  record_iter = tf.compat.v1.python_io.tf_record_iterator(input_path)
   read_count = 0
-  for r in record_iter:
+  for _ in record_iter:
     read_count += 1
   print("Read %d records using tf_record_iterator" % read_count)
 
@@ -222,15 +228,16 @@ if __name__ == "__main__":
 
   # Verify that running the read op in a session works.
   print("\n=== Testing TFRecordReader.read op in a session... ===")
-  with tf.Graph().as_default() as g:
-    filename_queue = tf.train.string_input_producer([input_path], num_epochs=1)
-    reader = tf.TFRecordReader()
+  with tf.Graph().as_default():
+    filename_queue = tf.compat.v1.train.string_input_producer([input_path],
+                                                              num_epochs=1)
+    reader = tf.compat.v1.TFRecordReader()
     _, serialized_example = reader.read(filename_queue)
 
-    with tf.Session() as sess:
-      sess.run(tf.global_variables_initializer())
-      sess.run(tf.local_variables_initializer())
-      tf.train.start_queue_runners()
+    with tf.compat.v1.Session() as sess:
+      sess.run(tf.compat.v1.global_variables_initializer())
+      sess.run(tf.compat.v1.local_variables_initializer())
+      tf.compat.v1.train.start_queue_runners()
       index = 0
       for _ in range(FLAGS.num_examples):
         print("Read record: %d" % index)
@@ -249,3 +256,7 @@ if __name__ == "__main__":
 
   create_dir_test()
   create_object_test()
+
+
+if __name__ == "__main__":
+  tf.compat.v1.app.run(main)

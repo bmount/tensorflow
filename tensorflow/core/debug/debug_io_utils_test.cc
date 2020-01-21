@@ -13,10 +13,16 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <cstdlib>
+#include <unordered_set>
+
 #include "tensorflow/core/debug/debug_io_utils.h"
 
+#include "tensorflow/core/debug/debug_callback_registry.h"
+#include "tensorflow/core/debug/debug_node_key.h"
 #include "tensorflow/core/debug/debugger_event_metadata.pb.h"
 #include "tensorflow/core/framework/summary.pb.h"
+#include "tensorflow/core/framework/tensor.pb.h"
 #include "tensorflow/core/framework/tensor_testutil.h"
 #include "tensorflow/core/lib/core/notification.h"
 #include "tensorflow/core/lib/core/status_test_util.h"
@@ -41,8 +47,8 @@ class DebugIOUtilsTest : public ::testing::Test {
     tensor_a_->flat<float>()(3) = 0.0;
 
     tensor_b_.reset(new Tensor(DT_STRING, TensorShape{2}));
-    tensor_b_->flat<string>()(0) = "corge";
-    tensor_b_->flat<string>()(1) = "garply";
+    tensor_b_->flat<tstring>()(0) = "corge";
+    tensor_b_->flat<tstring>()(1) = "garply";
   }
 
   Env* env_;
@@ -51,15 +57,49 @@ class DebugIOUtilsTest : public ::testing::Test {
 };
 
 TEST_F(DebugIOUtilsTest, ConstructDebugNodeKey) {
-  DebugNodeKey debug_node_key("/job:worker/replica:1/task:0/gpu:2",
+  DebugNodeKey debug_node_key("/job:worker/replica:1/task:0/device:GPU:2",
                               "hidden_1/MatMul", 0, "DebugIdentity");
-  EXPECT_EQ("/job:worker/replica:1/task:0/gpu:2", debug_node_key.device_name);
+  EXPECT_EQ("/job:worker/replica:1/task:0/device:GPU:2",
+            debug_node_key.device_name);
   EXPECT_EQ("hidden_1/MatMul", debug_node_key.node_name);
   EXPECT_EQ(0, debug_node_key.output_slot);
   EXPECT_EQ("DebugIdentity", debug_node_key.debug_op);
   EXPECT_EQ("hidden_1/MatMul:0:DebugIdentity", debug_node_key.debug_node_name);
-  EXPECT_EQ("_tfdbg_device_,job_worker,replica_1,task_0,gpu_2",
+  EXPECT_EQ("_tfdbg_device_,job_worker,replica_1,task_0,device_GPU_2",
             debug_node_key.device_path);
+}
+
+TEST_F(DebugIOUtilsTest, EqualityOfDebugNodeKeys) {
+  const DebugNodeKey debug_node_key_1("/job:worker/replica:1/task:0/gpu:2",
+                                      "hidden_1/MatMul", 0, "DebugIdentity");
+  const DebugNodeKey debug_node_key_2("/job:worker/replica:1/task:0/gpu:2",
+                                      "hidden_1/MatMul", 0, "DebugIdentity");
+  const DebugNodeKey debug_node_key_3("/job:worker/replica:1/task:0/gpu:2",
+                                      "hidden_1/BiasAdd", 0, "DebugIdentity");
+  const DebugNodeKey debug_node_key_4("/job:worker/replica:1/task:0/gpu:2",
+                                      "hidden_1/MatMul", 0,
+                                      "DebugNumericSummary");
+  EXPECT_EQ(debug_node_key_1, debug_node_key_2);
+  EXPECT_NE(debug_node_key_1, debug_node_key_3);
+  EXPECT_NE(debug_node_key_1, debug_node_key_4);
+  EXPECT_NE(debug_node_key_3, debug_node_key_4);
+}
+
+TEST_F(DebugIOUtilsTest, DebugNodeKeysIsHashable) {
+  const DebugNodeKey debug_node_key_1("/job:worker/replica:1/task:0/gpu:2",
+                                      "hidden_1/MatMul", 0, "DebugIdentity");
+  const DebugNodeKey debug_node_key_2("/job:worker/replica:1/task:0/gpu:2",
+                                      "hidden_1/MatMul", 0, "DebugIdentity");
+  const DebugNodeKey debug_node_key_3("/job:worker/replica:1/task:0/gpu:2",
+                                      "hidden_1/BiasAdd", 0, "DebugIdentity");
+
+  std::unordered_set<DebugNodeKey> keys;
+  keys.insert(debug_node_key_1);
+  ASSERT_EQ(1, keys.size());
+  keys.insert(debug_node_key_3);
+  ASSERT_EQ(2, keys.size());
+  keys.erase(debug_node_key_2);
+  ASSERT_EQ(1, keys.size());
 }
 
 TEST_F(DebugIOUtilsTest, DumpFloatTensorToFileSunnyDay) {
@@ -132,7 +172,7 @@ TEST_F(DebugIOUtilsTest, DumpStringTensorToFileSunnyDay) {
   // Determine and validate some information from the metadata.
   third_party::tensorflow::core::debug::DebuggerEventMetadata metadata;
   auto status = tensorflow::protobuf::util::JsonStringToMessage(
-      event.summary().value(0).metadata().plugin_data(0).content(), &metadata);
+      event.summary().value(0).metadata().plugin_data().content(), &metadata);
   ASSERT_TRUE(status.ok());
   ASSERT_EQ(kDebugNodeKey.device_name, metadata.device());
   ASSERT_EQ(kDebugNodeKey.output_slot, metadata.output_slot());
@@ -142,8 +182,8 @@ TEST_F(DebugIOUtilsTest, DumpStringTensorToFileSunnyDay) {
 
   // Verify tensor shape and value.
   ASSERT_EQ(tensor_b_->shape(), b_prime.shape());
-  for (int i = 0; i < b_prime.flat<string>().size(); ++i) {
-    ASSERT_EQ(tensor_b_->flat<string>()(i), b_prime.flat<string>()(i));
+  for (int i = 0; i < b_prime.flat<tstring>().size(); ++i) {
+    ASSERT_EQ(tensor_b_->flat<tstring>()(i), b_prime.flat<tstring>()(i));
   }
 
   // Tear down temporary file and directories.
@@ -245,8 +285,7 @@ TEST_F(DebugIOUtilsTest, PublishTensorToMultipleFileURLs) {
     // Determine and validate some information from the metadata.
     third_party::tensorflow::core::debug::DebuggerEventMetadata metadata;
     auto status = tensorflow::protobuf::util::JsonStringToMessage(
-        event.summary().value(0).metadata().plugin_data(0).content(),
-        &metadata);
+        event.summary().value(0).metadata().plugin_data().content(), &metadata);
     ASSERT_TRUE(status.ok());
     ASSERT_EQ(kDebugNodeKey.device_name, metadata.device());
     ASSERT_EQ(kDebugNodeKey.output_slot, metadata.output_slot());
@@ -271,6 +310,38 @@ TEST_F(DebugIOUtilsTest, PublishTensorToMultipleFileURLs) {
     ASSERT_EQ(0, undeleted_files);
     ASSERT_EQ(0, undeleted_dirs);
   }
+}
+
+TEST_F(DebugIOUtilsTest, PublishTensorToMemoryCallback) {
+  Initialize();
+
+  const DebugNodeKey kDebugNodeKey("/job:localhost/replica:0/task:0/cpu:0",
+                                   "foo/bar/qux/tensor_a", 0, "DebugIdentity");
+  const uint64 wall_time = env_->NowMicros();
+
+  bool called = false;
+  std::vector<string> urls = {"memcbk://test_callback"};
+  ;
+
+  auto* callback_registry = DebugCallbackRegistry::singleton();
+  callback_registry->RegisterCallback(
+      "test_callback", [this, &kDebugNodeKey, &called](const DebugNodeKey& key,
+                                                       const Tensor& tensor) {
+        called = true;
+        ASSERT_EQ(kDebugNodeKey.device_name, key.device_name);
+        ASSERT_EQ(kDebugNodeKey.node_name, key.node_name);
+        ASSERT_EQ(tensor_a_->shape(), tensor.shape());
+        for (int i = 0; i < tensor.flat<float>().size(); ++i) {
+          ASSERT_EQ(tensor_a_->flat<float>()(i), tensor.flat<float>()(i));
+        }
+      });
+
+  Status s =
+      DebugIO::PublishDebugTensor(kDebugNodeKey, *tensor_a_, wall_time, urls);
+  ASSERT_TRUE(s.ok());
+  ASSERT_TRUE(called);
+
+  callback_registry->UnregisterCallback("test_callback");
 }
 
 TEST_F(DebugIOUtilsTest, PublishTensorConcurrentlyToPartiallyOverlappingPaths) {
@@ -358,7 +429,7 @@ TEST_F(DebugIOUtilsTest, PublishTensorConcurrentlyToPartiallyOverlappingPaths) {
       // Determine and validate some information from the metadata.
       third_party::tensorflow::core::debug::DebuggerEventMetadata metadata;
       auto status = tensorflow::protobuf::util::JsonStringToMessage(
-          event.summary().value(0).metadata().plugin_data(0).content(),
+          event.summary().value(0).metadata().plugin_data().content(),
           &metadata);
       ASSERT_TRUE(status.ok());
       ASSERT_EQ(kDebugNodeKey.device_name, metadata.device());
@@ -383,6 +454,51 @@ TEST_F(DebugIOUtilsTest, PublishTensorConcurrentlyToPartiallyOverlappingPaths) {
     ASSERT_EQ(0, undeleted_files);
     ASSERT_EQ(0, undeleted_dirs);
   }
+}
+
+class DiskUsageLimitTest : public ::testing::Test {
+ public:
+  void Initialize() {
+    setenv("TFDBG_DISK_BYTES_LIMIT", "", 1);
+    DebugFileIO::resetDiskByteUsage();
+    DebugFileIO::global_disk_bytes_limit_ = 0;
+  }
+};
+
+TEST_F(DiskUsageLimitTest, RequestWithZeroByteIsOkay) {
+  Initialize();
+  ASSERT_TRUE(DebugFileIO::requestDiskByteUsage(0L));
+}
+
+TEST_F(DiskUsageLimitTest, ExceedingLimitAfterOneCall) {
+  Initialize();
+  ASSERT_FALSE(DebugFileIO::requestDiskByteUsage(100L * 1024L * 1024L * 1024L));
+}
+
+TEST_F(DiskUsageLimitTest, ExceedingLimitAfterTwoCalls) {
+  Initialize();
+  ASSERT_TRUE(DebugFileIO::requestDiskByteUsage(50L * 1024L * 1024L * 1024L));
+  ASSERT_FALSE(DebugFileIO::requestDiskByteUsage(50L * 1024L * 1024L * 1024L));
+  ASSERT_TRUE(DebugFileIO::requestDiskByteUsage(1024L));
+}
+
+TEST_F(DiskUsageLimitTest, ResetDiskByteUsageWorks) {
+  Initialize();
+  ASSERT_TRUE(DebugFileIO::requestDiskByteUsage(50L * 1024L * 1024L * 1024L));
+  ASSERT_FALSE(DebugFileIO::requestDiskByteUsage(50L * 1024L * 1024L * 1024L));
+  DebugFileIO::resetDiskByteUsage();
+  ASSERT_TRUE(DebugFileIO::requestDiskByteUsage(50L * 1024L * 1024L * 1024L));
+}
+
+TEST_F(DiskUsageLimitTest, CustomEnvVarIsObeyed) {
+  Initialize();
+  setenv("TFDBG_DISK_BYTES_LIMIT", "1024", 1);
+  ASSERT_FALSE(DebugFileIO::requestDiskByteUsage(1024L));
+  ASSERT_TRUE(DebugFileIO::requestDiskByteUsage(1000L));
+  ASSERT_TRUE(DebugFileIO::requestDiskByteUsage(23L));
+  ASSERT_FALSE(DebugFileIO::requestDiskByteUsage(1L));
+  DebugFileIO::resetDiskByteUsage();
+  ASSERT_TRUE(DebugFileIO::requestDiskByteUsage(1023L));
 }
 
 }  // namespace

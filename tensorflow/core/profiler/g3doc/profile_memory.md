@@ -1,4 +1,4 @@
-##Profile Memory
+## Profile Memory
 
 It is generally a good idea to visualize the memory usage in timeline.
 It allows you to see the memory consumption of each GPU over time.
@@ -14,10 +14,7 @@ Open a Chrome browser, enter URL chrome://tracing and load the timeline file.
 ******************************************************
 ```
 
-<left>
 ![Timeline](graph_timeline.png)
-</left>
-
 
 ```python
 # You can also visualize the memory information through other methods.

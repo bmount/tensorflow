@@ -13,23 +13,28 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_KERNELS_CWISE_OPS_COMMON_H_
-#define TENSORFLOW_KERNELS_CWISE_OPS_COMMON_H_
+#ifndef TENSORFLOW_CORE_KERNELS_CWISE_OPS_COMMON_H_
+#define TENSORFLOW_CORE_KERNELS_CWISE_OPS_COMMON_H_
 
 // See docs in ../ops/math_ops.cc.
+#define _USE_MATH_DEFINES
+#include <cmath>
 
 #define EIGEN_USE_THREADS
+
+#include "tensorflow/core/lib/bfloat16/bfloat16.h"
 
 #ifdef TENSORFLOW_USE_SYCL
 #include "tensorflow/core/kernels/cwise_ops_sycl_common.h"
 #endif
 
-#include "tensorflow/core/kernels/cwise_ops.h"
-#include "tensorflow/core/kernels/cwise_ops_gradients.h"
-
 #include "tensorflow/core/framework/op.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/tensor_types.h"
+#include "tensorflow/core/framework/variant_op_registry.h"
+#include "tensorflow/core/kernels/cwise_ops.h"
+#include "tensorflow/core/kernels/cwise_ops_gradients.h"
+#include "tensorflow/core/kernels/fill_functor.h"
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/util/bcast.h"
 
@@ -53,7 +58,7 @@ class BinaryOpShared : public OpKernel {
     // in-place computation.
     // Caller must check ctx->status() upon return for non-ok status.
     // If ctx->status().ok() is true, then out is guaranteed to be allocated.
-    BinaryOpState(OpKernelContext* ctx);
+    explicit BinaryOpState(OpKernelContext* ctx);
 
     const Tensor& in0;
     const Tensor& in1;
@@ -66,6 +71,7 @@ class BinaryOpShared : public OpKernel {
     int64 in1_num_elements;
 
     int ndims;
+    bool result;
   };
 
   void SetUnimplementedError(OpKernelContext* ctx);
@@ -86,20 +92,84 @@ class BinaryOp : public BinaryOpShared {
                        DataTypeToEnum<Tin>::v()) {}
 
   void Compute(OpKernelContext* ctx) override {
+    const Tensor& input_0 = ctx->input(0);
+    const Tensor& input_1 = ctx->input(1);
+    const Device& eigen_device = ctx->eigen_device<Device>();
+    bool error = false;
+    bool* const error_ptr = Functor::has_errors ? &error : nullptr;
+
+    // NOTE: Handle three simple cases before building the BinaryOpState, which
+    // is relatively expensive for small operations.
+    if (input_0.shape() == input_1.shape()) {
+      // tensor op tensor with no broadcasting.
+      Tensor* out;
+      OP_REQUIRES_OK(ctx, ctx->forward_input_or_allocate_output(
+                              {0, 1}, 0, input_0.shape(), &out));
+      functor::BinaryFunctor<Device, Functor, 1>()(
+          eigen_device, out->template flat<Tout>(),
+          input_0.template flat<Tin>(), input_1.template flat<Tin>(),
+          error_ptr);
+      if (Functor::has_errors && error) {
+        SetComputeError(ctx);
+      }
+      return;
+    } else if (input_0.shape().dims() == 0) {
+      // scalar op tensor.
+      Tensor* out;
+      OP_REQUIRES_OK(ctx, ctx->forward_input_or_allocate_output(
+                              {1}, 0, input_1.shape(), &out));
+
+      functor::BinaryFunctor<Device, Functor, 1>().Left(
+          eigen_device, out->template flat<Tout>(),
+          input_0.template scalar<Tin>(), input_1.template flat<Tin>(),
+          error_ptr);
+      if (Functor::has_errors && error) {
+        SetComputeError(ctx);
+      }
+      return;
+    } else if (input_1.shape().dims() == 0) {
+      // tensor op scalar.
+      Tensor* out;
+      OP_REQUIRES_OK(ctx, ctx->forward_input_or_allocate_output(
+                              {0}, 0, input_0.shape(), &out));
+      functor::BinaryFunctor<Device, Functor, 1>().Right(
+          eigen_device, out->template flat<Tout>(),
+          input_0.template flat<Tin>(), input_1.template scalar<Tin>(),
+          error_ptr);
+      if (Functor::has_errors && error) {
+        SetComputeError(ctx);
+      }
+      return;
+    }
+
     // 'state': Shared helper not dependent on T to reduce code size
     BinaryOpState state(ctx);
-    if (!ctx->status().ok()) return;
+    if (ctx->status().code() == error::RESOURCE_EXHAUSTED) {
+      // Stop when BinaryOpState's constructor failed due to OOM.
+      return;
+    }
+    auto& bcast = state.bcast;
     Tensor* out = state.out;
-    BCast* bcast = &state.bcast;
+    if (!bcast.IsValid()) {
+      if (ctx->status().ok()) {
+        if (state.result) {
+          functor::SetOneFunctor<Device, bool>()(eigen_device,
+                                                 out->flat<bool>());
+        } else {
+          functor::SetZeroFunctor<Device, bool>()(eigen_device,
+                                                  out->flat<bool>());
+        }
+      }
+      return;
+    }
+
     auto& in0 = state.in0;
     auto& in1 = state.in1;
     if (state.out_num_elements == 0) {
       return;
     }
+
     const int ndims = state.ndims;
-    const Device& eigen_device = ctx->eigen_device<Device>();
-    bool error = false;
-    bool* const error_ptr = Functor::has_errors ? &error : nullptr;
     if (ndims <= 1) {
       auto out_flat = out->flat<Tout>();
       if (state.in1_num_elements == 1) {
@@ -119,32 +189,32 @@ class BinaryOp : public BinaryOpShared {
       }
     } else if (ndims == 2) {
       functor::BinaryFunctor<Device, Functor, 2>().BCast(
-          eigen_device, out->shaped<Tout, 2>(bcast->result_shape()),
-          in0.template shaped<Tin, 2>(bcast->x_reshape()),
-          BCast::ToIndexArray<2>(bcast->x_bcast()),
-          in1.template shaped<Tin, 2>(bcast->y_reshape()),
-          BCast::ToIndexArray<2>(bcast->y_bcast()), error_ptr);
+          eigen_device, out->shaped<Tout, 2>(bcast.result_shape()),
+          in0.template shaped<Tin, 2>(bcast.x_reshape()),
+          BCast::ToIndexArray<2>(bcast.x_bcast()),
+          in1.template shaped<Tin, 2>(bcast.y_reshape()),
+          BCast::ToIndexArray<2>(bcast.y_bcast()), error_ptr);
     } else if (ndims == 3) {
       functor::BinaryFunctor<Device, Functor, 3>().BCast(
-          eigen_device, out->shaped<Tout, 3>(bcast->result_shape()),
-          in0.template shaped<Tin, 3>(bcast->x_reshape()),
-          BCast::ToIndexArray<3>(bcast->x_bcast()),
-          in1.template shaped<Tin, 3>(bcast->y_reshape()),
-          BCast::ToIndexArray<3>(bcast->y_bcast()), error_ptr);
+          eigen_device, out->shaped<Tout, 3>(bcast.result_shape()),
+          in0.template shaped<Tin, 3>(bcast.x_reshape()),
+          BCast::ToIndexArray<3>(bcast.x_bcast()),
+          in1.template shaped<Tin, 3>(bcast.y_reshape()),
+          BCast::ToIndexArray<3>(bcast.y_bcast()), error_ptr);
     } else if (ndims == 4) {
       functor::BinaryFunctor<Device, Functor, 4>().BCast(
-          eigen_device, out->shaped<Tout, 4>(bcast->result_shape()),
-          in0.template shaped<Tin, 4>(bcast->x_reshape()),
-          BCast::ToIndexArray<4>(bcast->x_bcast()),
-          in1.template shaped<Tin, 4>(bcast->y_reshape()),
-          BCast::ToIndexArray<4>(bcast->y_bcast()), error_ptr);
+          eigen_device, out->shaped<Tout, 4>(bcast.result_shape()),
+          in0.template shaped<Tin, 4>(bcast.x_reshape()),
+          BCast::ToIndexArray<4>(bcast.x_bcast()),
+          in1.template shaped<Tin, 4>(bcast.y_reshape()),
+          BCast::ToIndexArray<4>(bcast.y_bcast()), error_ptr);
     } else if (ndims == 5) {
       functor::BinaryFunctor<Device, Functor, 5>().BCast(
-          eigen_device, out->shaped<Tout, 5>(bcast->result_shape()),
-          in0.template shaped<Tin, 5>(bcast->x_reshape()),
-          BCast::ToIndexArray<5>(bcast->x_bcast()),
-          in1.template shaped<Tin, 5>(bcast->y_reshape()),
-          BCast::ToIndexArray<5>(bcast->y_bcast()), error_ptr);
+          eigen_device, out->shaped<Tout, 5>(bcast.result_shape()),
+          in0.template shaped<Tin, 5>(bcast.x_reshape()),
+          BCast::ToIndexArray<5>(bcast.x_bcast()),
+          in1.template shaped<Tin, 5>(bcast.y_reshape()),
+          BCast::ToIndexArray<5>(bcast.y_bcast()), error_ptr);
     } else {
       SetUnimplementedError(ctx);
     }
@@ -248,6 +318,26 @@ class UnaryOp : public OpKernel {
   }
 };
 
+template <typename Device, VariantUnaryOp OpEnum>
+class UnaryVariantOp : public OpKernel {
+ public:
+  explicit UnaryVariantOp(OpKernelConstruction* ctx) : OpKernel(ctx) {}
+
+  void Compute(OpKernelContext* ctx) override {
+    const Tensor& inp = ctx->input(0);
+    OP_REQUIRES(
+        ctx, TensorShapeUtils::IsScalar(inp.shape()),
+        errors::InvalidArgument("Non-scalar variants are not supported."));
+    const Variant& v = inp.scalar<Variant>()();
+    Variant v_out;
+    OP_REQUIRES_OK(ctx, UnaryOpVariant<Device>(ctx, OpEnum, v, &v_out));
+    int numa_node = DeviceNumaNode(ctx->device());
+    Tensor out(cpu_allocator(numa_node), DT_VARIANT, TensorShape());
+    out.scalar<Variant>()() = std::move(v_out);
+    ctx->set_output(0, std::move(out));
+  }
+};
+
 namespace functor {
 
 template <typename D, typename Out, typename Rhs>
@@ -271,7 +361,10 @@ struct BinaryFunctor<CPUDevice, Functor, NDIMS, false> {
     typedef typename Functor::out_type Tout;
     typedef typename Functor::in_type Tin;
     typedef typename Functor::func Binary;
-    typedef typename Eigen::internal::scalar_left<Tout, Tin, Binary> Unary;
+    typedef
+        typename Eigen::internal::scalar_left<Tout, Tin, Binary,
+                                              /*is_scalar_in_host_memory=*/true>
+            Unary;
     Assign(d, out, in.unaryExpr(Unary(scalar.data())));
   }
 
@@ -281,7 +374,70 @@ struct BinaryFunctor<CPUDevice, Functor, NDIMS, false> {
     typedef typename Functor::out_type Tout;
     typedef typename Functor::in_type Tin;
     typedef typename Functor::func Binary;
-    typedef typename Eigen::internal::scalar_right<Tout, Tin, Binary> Unary;
+    typedef typename Eigen::internal::scalar_right<
+        Tout, Tin, Binary, /*is_scalar_in_host_memory=*/true>
+        Unary;
+    Assign(d, out, in.unaryExpr(Unary(scalar.data())));
+  }
+
+  void BCast(const CPUDevice& dev,
+             typename TTypes<typename Functor::out_type, NDIMS>::Tensor out,
+             typename TTypes<typename Functor::in_type, NDIMS>::ConstTensor in0,
+             typename Eigen::array<Eigen::DenseIndex, NDIMS> bcast0,
+             typename TTypes<typename Functor::in_type, NDIMS>::ConstTensor in1,
+             typename Eigen::array<Eigen::DenseIndex, NDIMS> bcast1,
+             bool* error) {
+    typename Functor::func func;
+    if (AllOne<NDIMS>(bcast0) && AllOne<NDIMS>(bcast1)) {
+      Assign(dev, out, in0.binaryExpr(in1, func));
+    } else if (AllOne<NDIMS>(bcast0)) {
+      auto rhs = in1.broadcast(bcast1);
+      Assign(dev, out, in0.binaryExpr(rhs, func));
+    } else if (AllOne<NDIMS>(bcast1)) {
+      auto lhs = in0.broadcast(bcast0);
+      Assign(dev, out, lhs.binaryExpr(in1, func));
+    } else {
+      auto lhs = in0.broadcast(bcast0);
+      auto rhs = in1.broadcast(bcast1);
+      Assign(dev, out, lhs.binaryExpr(rhs, func));
+    }
+  }
+};
+
+// Partial specialization of BinaryFunctor<Device=CPUDevice, Functor, 2>
+// for functors with with no error checking.
+template <typename Functor>
+struct BinaryFunctor<CPUDevice, Functor, 2, false> {
+  enum { NDIMS = 2 };
+
+  void operator()(const CPUDevice& d, typename Functor::tout_type out,
+                  typename Functor::tin_type in0,
+                  typename Functor::tin_type in1, bool* error) {
+    Assign(d, out, in0.binaryExpr(in1, typename Functor::func()));
+  }
+
+  void Left(const CPUDevice& d, typename Functor::tout_type out,
+            typename Functor::tscalar_type scalar,
+            typename Functor::tin_type in, bool* error) {
+    typedef typename Functor::out_type Tout;
+    typedef typename Functor::in_type Tin;
+    typedef typename Functor::func Binary;
+    typedef
+        typename Eigen::internal::scalar_left<Tout, Tin, Binary,
+                                              /*is_scalar_in_host_memory=*/true>
+            Unary;
+    Assign(d, out, in.unaryExpr(Unary(scalar.data())));
+  }
+
+  void Right(const CPUDevice& d, typename Functor::tout_type out,
+             typename Functor::tin_type in,
+             typename Functor::tscalar_type scalar, bool* error) {
+    typedef typename Functor::out_type Tout;
+    typedef typename Functor::in_type Tin;
+    typedef typename Functor::func Binary;
+    typedef typename Eigen::internal::scalar_right<
+        Tout, Tin, Binary, /*is_scalar_in_host_memory=*/true>
+        Unary;
     Assign(d, out, in.unaryExpr(Unary(scalar.data())));
   }
 
@@ -314,8 +470,7 @@ struct BinaryFunctor<CPUDevice, Functor, NDIMS, false> {
              bool* error) {
     typedef typename Functor::in_type T;
     typename Functor::func func;
-    if ((NDIMS == 2) && Functor::use_bcast_optimization &&
-        use_bcast_optimization<T>::value) {
+    if (Functor::use_bcast_optimization && use_bcast_optimization<T>::value) {
       // Optimize for speed by using Eigen::type2index and avoid
       // .broadcast() when we know its a no-op.
       //
@@ -390,7 +545,7 @@ struct BinaryFunctor<CPUDevice, Functor, NDIMS, false> {
       }
     }
 
-    // Fallback path. Always work and probably slower.
+    // Fallback path. Always works and probably slower.
     auto lhs = in0.broadcast(bcast0);
     auto rhs = in1.broadcast(bcast1);
     Assign(dev, out, lhs.binaryExpr(rhs, func));
@@ -412,7 +567,10 @@ struct BinaryFunctor<CPUDevice, Functor, NDIMS, true> {
     typedef typename Functor::out_type Tout;
     typedef typename Functor::in_type Tin;
     typedef typename Functor::func Binary;
-    typedef typename Eigen::internal::scalar_left<Tout, Tin, Binary> Unary;
+    typedef
+        typename Eigen::internal::scalar_left<Tout, Tin, Binary,
+                                              /*is_scalar_in_host_memory=*/true>
+            Unary;
     Assign(d, out, in.unaryExpr(Unary(scalar.data(), error)));
   }
 
@@ -422,7 +580,9 @@ struct BinaryFunctor<CPUDevice, Functor, NDIMS, true> {
     typedef typename Functor::out_type Tout;
     typedef typename Functor::in_type Tin;
     typedef typename Functor::func Binary;
-    typedef typename Eigen::internal::scalar_right<Tout, Tin, Binary> Unary;
+    typedef typename Eigen::internal::scalar_right<
+        Tout, Tin, Binary, /*is_scalar_in_host_memory=*/true>
+        Unary;
     Assign(d, out, in.unaryExpr(Unary(scalar.data(), error)));
   }
 
@@ -466,6 +626,11 @@ struct ApproximateEqual<CPUDevice, T> {
   REGISTER_KERNEL_BUILDER(Name(N).Device(DEVICE_##D).TypeConstraint<T>("T"), \
                           OP<D##Device, F<T>>);
 
+#define REGISTER_VARIANT(OP, D, N, ENUM)                       \
+  REGISTER_KERNEL_BUILDER(                                     \
+      Name(N).Device(DEVICE_##D).TypeConstraint<Variant>("T"), \
+      OP<D##Device, ENUM>);
+
 // Macros to register kernels for multiple types (T0, T1, etc.)  on
 // device type "D" (CPU or GPU) for operation "N" (e.g., sqrt) using
 // the functor "F" (e.g., functor::sqrt).
@@ -473,7 +638,7 @@ struct ApproximateEqual<CPUDevice, T> {
 #if defined(__ANDROID_TYPES_SLIM__)
 // Note that __ANDROID_TYPES_SLIM__ is also checked in the cwise_ops*.cc files.
 // Normally Android TensorFlow is built with a reduced number of types (float).
-// Override on the command-line "--define ANDROID_TYPES=__ANDROID_TYPES_FULL__"
+// Override on the command-line using "--copt=-D__ANDROID_TYPES_FULL__"
 // to generate a library with full type support with a consequent increase in
 // code size.
 #define REGISTER2(OP, D, N, F, T0, T1) REGISTER(OP, D, N, F, T0)
@@ -520,4 +685,4 @@ struct ApproximateEqual<CPUDevice, T> {
 
 }  // end namespace tensorflow
 
-#endif  // TENSORFLOW_KERNELS_CWISE_OPS_COMMON_H_
+#endif  // TENSORFLOW_CORE_KERNELS_CWISE_OPS_COMMON_H_

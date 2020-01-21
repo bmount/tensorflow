@@ -22,7 +22,7 @@ import java.util.List;
  * Driver for {@link Graph} execution.
  *
  * <p>A {@code Session} instance encapsulates the environment in which {@link Operation}s in a
- * {@link Graph} are executed to compute {@link Tensor}s. For example:
+ * {@link Graph} are executed to compute {@link Tensor Tensors}. For example:
  *
  * <pre>{@code
  * // Let's say graph is an instance of the Graph class
@@ -109,12 +109,13 @@ public final class Session implements AutoCloseable {
   }
 
   /**
-   * Run {@link Operation}s and evaluate {@link Tensor}s.
+   * Run {@link Operation}s and evaluate {@link Tensor Tensors}.
    *
    * <p>A Runner runs the necessary graph fragments to execute every {@link Operation} required to
-   * evaluate the {@link Tensor}s to fetch. The {@link #feed(String,int,Tensor)} call allows callers
-   * to override the value of {@link Tensor}s in the graph by substituting the provided {@link
-   * Tensor}s for the outputs of the operations provided to {@link #feed(String,int,Tensor)}.
+   * evaluate the {@link Tensor Tensors} to fetch. The {@link #feed(String,int,Tensor)} call allows
+   * callers to override the value of {@link Tensor Tensors} in the graph by substituting the
+   * provided {@link Tensor Tensors} for the outputs of the operations provided to {@link
+   * #feed(String,int,Tensor)}.
    */
   public final class Runner {
     /**
@@ -127,7 +128,7 @@ public final class Session implements AutoCloseable {
      *     {@code SignatureDef} protocol buffer messages that are included in {@link
      *     SavedModelBundle#metaGraphDef()}.
      */
-    public Runner feed(String operation, Tensor t) {
+    public Runner feed(String operation, Tensor<?> t) {
       return feed(parseOutput(operation), t);
     }
 
@@ -138,7 +139,7 @@ public final class Session implements AutoCloseable {
      * <p>Operations in a {@link Graph} can have multiple outputs, {@code index} identifies which
      * one {@code t} is being provided for.
      */
-    public Runner feed(String operation, int index, Tensor t) {
+    public Runner feed(String operation, int index, Tensor<?> t) {
       Operation op = operationByName(operation);
       if (op != null) {
         inputs.add(op.output(index));
@@ -149,10 +150,10 @@ public final class Session implements AutoCloseable {
 
     /**
      * Use {@code t} instead of the Tensor referred to by executing the operation referred to by
-     * {@code output}.
+     * {@code operand}.
      */
-    public Runner feed(Output o, Tensor t) {
-      inputs.add(o);
+    public Runner feed(Operand<?> operand, Tensor<?> t) {
+      inputs.add(operand.asOutput());
       inputTensors.add(t);
       return this;
     }
@@ -185,17 +186,27 @@ public final class Session implements AutoCloseable {
       return this;
     }
 
-    /** Makes {@link #run()} return the Tensor referred to by {@code output}. */
-    public Runner fetch(Output output) {
+    /** 
+     * Makes {@link #run()} return the Tensor referred to by {@code output}. 
+     */
+    public Runner fetch(Output<?> output) {
       outputs.add(output);
       return this;
     }
+    
+    /**
+     * Makes {@link #run()} return the Tensor referred to by the output of {@code operand}. 
+     */
+    public Runner fetch(Operand<?> operand) {
+      return fetch(operand.asOutput());
+    }
 
     /**
-     * Make {@link #run()} execute {@code operation}, but not return any evaluated {@link Tensor}s.
+     * Make {@link #run()} execute {@code operation}, but not return any evaluated {@link Tensor
+     * Tensors}.
      */
     public Runner addTarget(String operation) {
-      Operation op = operationByName(operation);
+      GraphOperation op = operationByName(operation);
       if (op != null) {
         targets.add(op);
       }
@@ -203,11 +214,28 @@ public final class Session implements AutoCloseable {
     }
 
     /**
-     * Make {@link #run()} execute {@code operation}, but not return any evaluated {@link Tensor}s.
+     * Make {@link #run()} execute {@code operation}, but not return any evaluated {@link Tensor
+     * Tensors}.
+     *
+     * @throws IllegalArgumentException if the operation is not a {@link GraphOperation}
      */
     public Runner addTarget(Operation operation) {
-      targets.add(operation);
+      if (!(operation instanceof GraphOperation)) {
+        throw new IllegalArgumentException(
+            "Operation of type "
+                + operation.getClass().getName()
+                + " is not supported in graph sessions");
+      }
+      targets.add((GraphOperation) operation);
       return this;
+    }
+
+    /**
+     * Make {@link #run} execute {@code operand}, but not return any evaluated {@link Tensor
+     * Tensors}.
+     */
+    public Runner addTarget(Operand<?> operand) {
+      return addTarget(operand.asOutput().op());
     }
 
     /**
@@ -232,16 +260,19 @@ public final class Session implements AutoCloseable {
     /**
      * Execute the graph fragments necessary to compute all requested fetches.
      *
-     * <p><b>WARNING:</b> The caller assumes ownership of all returned {@link Tensor}s, i.e., the
-     * caller must call {@link Tensor#close()} on all elements of the returned list to free up
+     * <p><b>WARNING:</b> The caller assumes ownership of all returned {@link Tensor Tensors}, i.e.,
+     * the caller must call {@link Tensor#close} on all elements of the returned list to free up
      * resources.
      *
      * <p>TODO(ashankar): Reconsider the return type here. Two things in particular: (a) Make it
      * easier for the caller to cleanup (perhaps returning something like AutoCloseableList in
      * SessionTest.java), and (b) Evaluate whether the return value should be a list, or maybe a
      * {@code Map<Output, Tensor>}?
+     *
+     * <p>TODO(andrewmyers): It would also be good if whatever is returned here made it easier to
+     * extract output tensors in a type-safe way.
      */
-    public List<Tensor> run() {
+    public List<Tensor<?>> run() {
       return runHelper(false).outputs;
     }
 
@@ -269,23 +300,23 @@ public final class Session implements AutoCloseable {
       // It's okay to use Operation.getUnsafeNativeHandle() here since the safety depends on the
       // validity of the Graph and graphRef ensures that.
       int idx = 0;
-      for (Tensor t : inputTensors) {
+      for (Tensor<?> t : inputTensors) {
         inputTensorHandles[idx++] = t.getNativeHandle();
       }
       idx = 0;
-      for (Output o : inputs) {
-        inputOpHandles[idx] = o.op().getUnsafeNativeHandle();
+      for (Output<?> o : inputs) {
+        inputOpHandles[idx] = o.getUnsafeNativeHandle();
         inputOpIndices[idx] = o.index();
         idx++;
       }
       idx = 0;
-      for (Output o : outputs) {
-        outputOpHandles[idx] = o.op().getUnsafeNativeHandle();
+      for (Output<?> o : outputs) {
+        outputOpHandles[idx] = o.getUnsafeNativeHandle();
         outputOpIndices[idx] = o.index();
         idx++;
       }
       idx = 0;
-      for (Operation op : targets) {
+      for (GraphOperation op : targets) {
         targetOpHandles[idx++] = op.getUnsafeNativeHandle();
       }
       Reference runRef = new Reference();
@@ -306,12 +337,12 @@ public final class Session implements AutoCloseable {
       } finally {
         runRef.close();
       }
-      List<Tensor> outputs = new ArrayList<Tensor>();
+      List<Tensor<?>> outputs = new ArrayList<Tensor<?>>();
       for (long h : outputTensorHandles) {
         try {
           outputs.add(Tensor.fromHandle(h));
         } catch (Exception e) {
-          for (Tensor t : outputs) {
+          for (Tensor<?> t : outputs) {
             t.close();
           }
           outputs.clear();
@@ -347,15 +378,16 @@ public final class Session implements AutoCloseable {
       }
     }
 
-    private Operation operationByName(String opName) {
-      Operation op = graph.operation(opName);
+    private GraphOperation operationByName(String opName) {
+      GraphOperation op = graph.operation(opName);
       if (op == null) {
         throw new IllegalArgumentException("No Operation named [" + opName + "] in the Graph");
       }
       return op;
     }
 
-    private Output parseOutput(String opName) {
+    @SuppressWarnings("rawtypes")
+    private Output<?> parseOutput(String opName) {
       int colon = opName.lastIndexOf(':');
       if (colon == -1 || colon == opName.length() - 1) {
         return new Output(operationByName(opName), 0);
@@ -369,10 +401,10 @@ public final class Session implements AutoCloseable {
       }
     }
 
-    private ArrayList<Output> inputs = new ArrayList<Output>();
-    private ArrayList<Tensor> inputTensors = new ArrayList<Tensor>();
-    private ArrayList<Output> outputs = new ArrayList<Output>();
-    private ArrayList<Operation> targets = new ArrayList<Operation>();
+    private ArrayList<Output<?>> inputs = new ArrayList<Output<?>>();
+    private ArrayList<Tensor<?>> inputTensors = new ArrayList<Tensor<?>>();
+    private ArrayList<Output<?>> outputs = new ArrayList<Output<?>>();
+    private ArrayList<GraphOperation> targets = new ArrayList<GraphOperation>();
     private byte[] runOptions = null;
   }
 
@@ -388,7 +420,7 @@ public final class Session implements AutoCloseable {
    */
   public static final class Run {
     /** Tensors from requested fetches. */
-    public List<Tensor> outputs;
+    public List<Tensor<?>> outputs;
 
     /**
      * (Experimental): Metadata about the run.
@@ -430,7 +462,7 @@ public final class Session implements AutoCloseable {
    * @param inputOpIndices (see inputTensorHandles)
    * @param inputTensorHandles together with inputOpHandles and inputOpIndices specifies the values
    *     that are being "fed" (do not need to be computed) during graph execution.
-   *     inputTensorHandles[i] (which correponds to a Tensor.nativeHandle) is considered to be the
+   *     inputTensorHandles[i] (which corresponds to a Tensor.nativeHandle) is considered to be the
    *     inputOpIndices[i]-th output of the Operation inputOpHandles[i]. Thus, it is required that
    *     inputOpHandles.length == inputOpIndices.length == inputTensorHandles.length.
    * @param outputOpHandles (see outputOpIndices)
