@@ -950,6 +950,7 @@ def aot_compile_cpu(args):
       signature_def_key=args.signature_def_key,
       variables_to_feed=variables_to_feed,
       output_prefix=args.output_prefix,
+      target_triple=args.target_triple,
       cpp_class=args.cpp_class)
 
 
@@ -958,6 +959,7 @@ def aot_compile_cpu_meta_graph_def(checkpoint_path,
                                    output_prefix,
                                    signature_def_key,
                                    cpp_class,
+                                   target_triple,
                                    variables_to_feed=()):
   """Compile a `MetaGraphDef` to header+object files in `output_prefix`.
 
@@ -979,7 +981,8 @@ def aot_compile_cpu_meta_graph_def(checkpoint_path,
     meta_graph_def: Instance of `MetaGraphDef`.
     output_prefix: Python string.  Path prefix for outputs.
     signature_def_key: String, the signature_def to use in the SavedModel.
-    cpp_class: Name of output C++ class.
+    cpp_class: String, Name of output C++ class.
+    target_triple: String, LLVM target triple.
     variables_to_feed: A list of strings, the variables that will be fed by the
       user; these won't be frozen.  If `None`, then we will extract all the
       variables in the graph and mark them as to-feed.  The default behavior is
@@ -1088,6 +1091,7 @@ def aot_compile_cpu_meta_graph_def(checkpoint_path,
       graph=frozen_graph_def_location,
       config=config_pbtxt_location,
       cpp_class=cpp_class,
+      target_triple=target_triple,
       entry_point='entry_{}'.format(entry_digest),
       out_function_object='{}.o'.format(output_prefix),
       out_header='{}.h'.format(output_prefix),
@@ -1117,9 +1121,12 @@ def _optimize_graph(meta_graph_def, signature_def):
 def _replace_input_placeholders_with_default_values(graph_def, signature_def):
   """Replace graphdef's `tf.placeholder` input ops with all-zero constants."""
   name_to_node_map = dict((n.name, n) for n in graph_def.node)
-  temp_graph = ops_lib.Graph()
+  processed_nodes = set([])
   for name, input_ in signature_def.inputs.items():
     tensor_name, _ = _parse_tensor_name(input_.name)
+    if tensor_name in processed_nodes:
+      continue
+    processed_nodes.add(tensor_name)
     if tensor_name not in name_to_node_map:
       raise RuntimeError(
           'Unable to find input signature tensor \'{}\' in optimized GraphDef. '
@@ -1138,9 +1145,17 @@ def _replace_input_placeholders_with_default_values(graph_def, signature_def):
           'Expected fully defined input shape for signature_def \'{}\', '
           'tensor name: \'{}\'; but shape is: {}.'
           .format(name, tensor_name, shape))
+    temp_graph = ops_lib.Graph()
     with temp_graph.as_default():
-      const = array_ops.zeros(shape, dtype=input_.dtype, name=tensor_name)
+      const = array_ops.zeros(
+          shape, dtype=input_.dtype, name=tensor_name)
     node.CopyFrom(const.op.node_def)
+    # Sometimes zeros() also creates additional nodes
+    for op in temp_graph.get_operations():
+      if op.name == const.op.name:  # We just inserted this one.
+        continue
+      graph_def.node.append(op.node_def)
+      name_to_node_map[op.node_def.name] = op.node_def
 
 
 def add_show_subparser(subparsers):
@@ -1398,6 +1413,14 @@ def add_aot_compile_cpu_subparser(subparsers):
       default=signature_constants.DEFAULT_SERVING_SIGNATURE_DEF_KEY,
       help=('signature_def key to use.  '
             'default: DEFAULT_SERVING_SIGNATURE_DEF_KEY'))
+  parser_compile.add_argument(
+      '--target_triple',
+      type=str,
+      default='x86_64-pc-linux',
+      help=('Target triple for LLVM during AOT compilation.  Examples: '
+            'x86_64-none-darwin, x86_64-apple-ios, arm64-none-ios, '
+            'armv7-none-android.  More examples are available in tfcompile.bzl '
+            'in the tensorflow codebase.'))
   parser_compile.add_argument(
       '--checkpoint_path',
       type=str,

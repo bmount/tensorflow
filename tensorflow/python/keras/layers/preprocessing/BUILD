@@ -39,7 +39,7 @@ py_library(
         "//tensorflow/python:lookup_ops",
         "//tensorflow/python:sparse_tensor",
         "//tensorflow/python:tensor_spec",
-        "//tensorflow/python/keras:base_layer",
+        "//tensorflow/python/keras/engine:base_layer",
     ],
 )
 
@@ -61,7 +61,7 @@ py_library(
         "//tensorflow/python:stateless_random_ops",
         "//tensorflow/python:tensor_shape",
         "//tensorflow/python/keras:backend",
-        "//tensorflow/python/keras:base_layer",
+        "//tensorflow/python/keras/engine:base_layer",
         "//tensorflow/python/keras/utils:tf_utils",
     ],
 )
@@ -80,7 +80,7 @@ py_library(
         "//tensorflow/python:math_ops",
         "//tensorflow/python:util",
         "//tensorflow/python/keras:backend",
-        "//tensorflow/python/keras:base_preprocessing_layer",
+        "//tensorflow/python/keras/engine:base_preprocessing_layer",
     ],
 )
 
@@ -89,6 +89,32 @@ py_library(
     srcs = [
         "text_vectorization.py",
         "text_vectorization_v1.py",
+    ],
+    srcs_version = "PY2AND3",
+    deps = [
+        ":categorical_encoding",
+        "//tensorflow/python:array_ops",
+        "//tensorflow/python:control_flow_ops",
+        "//tensorflow/python:dtypes",
+        "//tensorflow/python:framework_ops",
+        "//tensorflow/python:lookup_ops",
+        "//tensorflow/python:math_ops",
+        "//tensorflow/python:string_ops",
+        "//tensorflow/python:tensor_shape",
+        "//tensorflow/python:tensor_spec",
+        "//tensorflow/python:util",
+        "//tensorflow/python/data/ops:dataset_ops",
+        "//tensorflow/python/keras:backend",
+        "//tensorflow/python/keras/engine:base_preprocessing_layer",
+        "//tensorflow/python/ops/ragged",
+    ],
+)
+
+py_library(
+    name = "categorical_encoding",
+    srcs = [
+        "categorical_encoding.py",
+        "categorical_encoding_v1.py",
     ],
     srcs_version = "PY2AND3",
     deps = [
@@ -104,7 +130,7 @@ py_library(
         "//tensorflow/python:util",
         "//tensorflow/python/data/ops:dataset_ops",
         "//tensorflow/python/keras:backend",
-        "//tensorflow/python/keras:base_preprocessing_layer",
+        "//tensorflow/python/keras/engine:base_preprocessing_layer",
         "//tensorflow/python/ops/ragged",
     ],
 )
@@ -180,6 +206,22 @@ tf_py_test(
     deps = [
         ":preprocessing_test_utils",
         ":text_vectorization",
+        "//tensorflow/python:client_testlib",
+        "//tensorflow/python/keras",
+        "//tensorflow/python/keras/utils:generic_utils",
+        "//tensorflow/python/ops/ragged:ragged_string_ops",
+        "@absl_py//absl/testing:parameterized",
+    ],
+)
+
+tf_py_test(
+    name = "categorical_encoding_test",
+    size = "medium",
+    srcs = ["categorical_encoding_test.py"],
+    python_version = "PY3",
+    deps = [
+        ":categorical_encoding",
+        ":preprocessing_test_utils",
         "//tensorflow/python:client_testlib",
         "//tensorflow/python/keras",
         "//tensorflow/python/keras/utils:generic_utils",

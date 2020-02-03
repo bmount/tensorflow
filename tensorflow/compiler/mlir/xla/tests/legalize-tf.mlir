@@ -2104,6 +2104,10 @@ func @slice_variable_start_negative_one_size(%arg0: tensor<3x4xi32>, %arg1: tens
   return %0 : tensor<1x4xi32>
 }
 
+//===----------------------------------------------------------------------===//
+// StridedSlice op legalizations.
+//===----------------------------------------------------------------------===//
+
 // CHECK-LABEL: simple_strided_slice
 func @simple_strided_slice(%input: tensor<4x8xf32>) -> tensor<3x2xf32> {
   %begin = "tf.Const"() {value = dense<[0, 1]> : tensor<2xi32>} : () -> (tensor<2xi32>)
@@ -2196,6 +2200,46 @@ func @strided_slice_begin_end_mask(%input: tensor<4x128x1024xf32>) {
 
   // CHECK: "xla_hlo.reshape"(%[[SLICE]])
   // CHECK-SAME: -> tensor<f32>
+
+  return
+}
+
+// CHECK-LABEL: strided_slice_shrink_axis_mask
+// CHECK-SAME: %[[INPUT:.+]]: tensor<4x128x1024xf32>
+func @strided_slice_shrink_axis_mask(%input: tensor<4x128x1024xf32>) {
+
+  // For StridedSlice
+  // Dim #:            0,   1,    2
+  // Input shape:     [4, 128, 1024]
+  // Begin:            1,   4,   -3
+  // End:              8,  65,   42
+  // Stride:           1,   4,   -1
+  // Begin mask:       1,   0,    0  (= 1)
+  // End mask:         0,   0,    1  (= 4)
+  // Shrink axis mask: 1,   0,    1  (= 5)
+
+  // So result shape:
+  // Dim #0: shrink axis, take value at [1]
+  // Dim #1: 4 to 65 stride 4: so 16
+  // Dim #2: shrink axis, take value at [-3]
+  // result shape: [16]
+
+  // As output shape of StridedSlice differs, a reshape will follow.
+
+  %begin = "tf.Const"() {value = dense<[1, 4, -3]> : tensor<3xi32>} : () -> (tensor<3xi32>)
+  %end = "tf.Const"() {value = dense<[8, 65, 42]> : tensor<3xi32>} : () -> (tensor<3xi32>)
+  %strides = "tf.Const"() {value = dense<[1, 4, -1]> : tensor<3xi32>} : () -> (tensor<3xi32>)
+
+  // CHECK: %[[SLICE:.*]] = "xla_hlo.slice"(%[[INPUT]])
+  // CHECK-DAG-SAME: limit_indices = dense<[1, 65, 1022]>
+  // CHECK-DAG-SAME: start_indices = dense<[0, 4, 1021]>
+  // CHECK-DAG-SAME: strides = dense<[1, 4, 1]>
+  // CHECK-SAME: -> tensor<1x16x1xf32>
+
+  %0 = "tf.StridedSlice"(%input, %begin, %end, %strides) {begin_mask = 1, end_mask = 4, shrink_axis_mask = 5} : (tensor<4x128x1024xf32>, tensor<3xi32>, tensor<3xi32>, tensor<3xi32>) -> tensor<16xf32>
+
+  // CHECK: "xla_hlo.reshape"(%[[SLICE]])
+  // CHECK-SAME: -> tensor<16xf32>
 
   return
 }
@@ -2306,6 +2350,40 @@ func @max_dynamic(%arg0: tensor<4x?xf16>) -> tensor<4x1xf16> {
     // CHECK: return %[[RESULT]] : tensor<4x1xf16>
   %dimension = "tf.Const"() { value = dense<1> : tensor<1xi64> } : () -> tensor<1xi64>
   %0 = "tf.Max"(%arg0, %dimension) { keep_dims = true }: (tensor<4x?xf16>, tensor<1xi64>) -> tensor<4x1xf16>
+  return %0 : tensor<4x1xf16>
+}
+
+// CHECK-LABEL: func @min
+func @min(%arg0: tensor<4x8xf16>) -> tensor<4x1xf16> {
+  // CHECK: %[[CAST:.*]] = "xla_hlo.convert"(%arg0) : (tensor<4x8xf16>) -> tensor<4x8xf16>
+  // CHECK: %[[INITIAL:.*]] = xla_hlo.constant dense<0x7C00> : tensor<f16>
+  // CHECK: %[[REDUCED:.*]] = "xla_hlo.reduce"(%[[CAST]], %[[INITIAL]]) ( {
+  // CHECK: ^bb0(%[[ARGA:.*]]: tensor<f16>, %[[ARGB:.*]]: tensor<f16>):
+  // CHECK:  %[[REDUCE_BODY_RESULT:.*]] = xla_hlo.min %[[ARGA]], %[[ARGB]] : tensor<f16>
+  // CHECK:  "xla_hlo.return"(%[[REDUCE_BODY_RESULT]]) : (tensor<f16>) -> ()
+  // CHECK: }) {dimensions = dense<1> : tensor<1xi64>} : (tensor<4x8xf16>, tensor<f16>) -> tensor<4xf16>
+  // CHECK: %[[CAST_BACK:.*]] = "xla_hlo.convert"(%[[REDUCED]]) : (tensor<4xf16>) -> tensor<4xf16>
+  // CHECK: %[[RESULT:.*]] = "xla_hlo.reshape"(%[[CAST_BACK]]) : (tensor<4xf16>) -> tensor<4x1xf16>
+  // CHECK: return %[[RESULT]] : tensor<4x1xf16>
+  %dimension = "tf.Const"() { value = dense<1> : tensor<1xi64> } : () -> tensor<1xi64>
+  %0 = "tf.Min"(%arg0, %dimension) { keep_dims = true }: (tensor<4x8xf16>, tensor<1xi64>) -> tensor<4x1xf16>
+  return %0 : tensor<4x1xf16>
+}
+
+// CHECK-LABEL: func @prod
+func @prod(%arg0: tensor<4x8xf16>) -> tensor<4x1xf16> {
+  // CHECK: %[[CAST:.*]] = "xla_hlo.convert"(%arg0) : (tensor<4x8xf16>) -> tensor<4x8xf32>
+  // CHECK: %[[INITIAL:.*]] = xla_hlo.constant dense<1.000000e+00> : tensor<f32>
+  // CHECK: %[[REDUCED:.*]] = "xla_hlo.reduce"(%[[CAST]], %[[INITIAL]]) ( {
+  // CHECK: ^bb0(%[[ARGA:.*]]: tensor<f32>, %[[ARGB:.*]]: tensor<f32>):
+  // CHECK:  %[[REDUCE_BODY_RESULT:.*]] = xla_hlo.mul %[[ARGA]], %[[ARGB]] : tensor<f32>
+  // CHECK:  "xla_hlo.return"(%[[REDUCE_BODY_RESULT]]) : (tensor<f32>) -> ()
+  // CHECK: }) {dimensions = dense<1> : tensor<1xi64>} : (tensor<4x8xf32>, tensor<f32>) -> tensor<4xf32>
+  // CHECK: %[[CAST_BACK:.*]] = "xla_hlo.convert"(%[[REDUCED]]) : (tensor<4xf32>) -> tensor<4xf16>
+  // CHECK: %[[RESULT:.*]] = "xla_hlo.reshape"(%[[CAST_BACK]]) : (tensor<4xf16>) -> tensor<4x1xf16>
+  // CHECK: return %[[RESULT]] : tensor<4x1xf16>
+  %dimension = "tf.Const"() { value = dense<1> : tensor<1xi64> } : () -> tensor<1xi64>
+  %0 = "tf.Prod"(%arg0, %dimension) { keep_dims = true }: (tensor<4x8xf16>, tensor<1xi64>) -> tensor<4x1xf16>
   return %0 : tensor<4x1xf16>
 }
 
@@ -2449,15 +2527,30 @@ func @argmax_dynamic_shape_input(%arg0: tensor<3x?xi32>) -> tensor<3xi32> {
   return %0 : tensor<3xi32>
 }
 
+//===----------------------------------------------------------------------===//
+// Random op legalizations.
+//===----------------------------------------------------------------------===//
+
 // CHECK-LABEL: func @rng_uniform
-func @rng_uniform(%arg0: tensor<3xi32>) -> tensor<12x12x64xf32> {
+func @rng_uniform(%arg0: tensor<3xi32>) -> tensor<12x?x64xf32> {
   // CHECK: %[[ZERO:.*]] = xla_hlo.constant dense<0.000000e+00> : tensor<f32>
   // CHECK: %[[ONE:.*]] = xla_hlo.constant dense<1.000000e+00> : tensor<f32>
   // CHECK: %[[CONV:.*]] = "xla_hlo.convert"(%arg0) : (tensor<3xi32>) -> tensor<3xi64>
-  // CHECK: %[[F32:.*]] = "xla_hlo.rng_uniform"(%[[ZERO]], %[[ONE]], %[[CONV]]) {{.*}} -> tensor<12x12x64xf32>
-  %0 = "tf.RandomUniform"(%arg0) {T = "tfdtype$DT_INT32", dtype = "tfdtype$DT_FLOAT", seed = 0 : i64, seed2 = 0 : i64} : (tensor<3xi32>) -> tensor<12x12x64xf32>
-  // CHECK: return %[[F32]] : tensor<12x12x64xf32>
-  return %0 : tensor<12x12x64xf32>
+  // CHECK: %[[F32:.*]] = "xla_hlo.rng_uniform"(%[[ZERO]], %[[ONE]], %[[CONV]]) {{.*}} -> tensor<12x?x64xf32>
+  %0 = "tf.RandomUniform"(%arg0) : (tensor<3xi32>) -> tensor<12x?x64xf32>
+  // CHECK: return %[[F32]]
+  return %0 : tensor<12x?x64xf32>
+}
+
+// CHECK-LABEL: func @rng_std_normal
+func @rng_std_normal(%arg0: tensor<3xi32>) -> tensor<12x?x64xf32> {
+  // CHECK: %[[ZERO:.*]] = xla_hlo.constant dense<0.000000e+00> : tensor<f32>
+  // CHECK: %[[ONE:.*]] = xla_hlo.constant dense<1.000000e+00> : tensor<f32>
+  // CHECK: %[[CONV:.*]] = "xla_hlo.convert"(%arg0) : (tensor<3xi32>) -> tensor<3xi64>
+  // CHECK: %[[F32:.*]] = "xla_hlo.rng_normal"(%[[ZERO]], %[[ONE]], %[[CONV]]) {{.*}} -> tensor<12x?x64xf32>
+  %0 = "tf.RandomStandardNormal"(%arg0) : (tensor<3xi32>) -> tensor<12x?x64xf32>
+  // CHECK: return %[[F32]]
+  return %0 : tensor<12x?x64xf32>
 }
 
 //===----------------------------------------------------------------------===//

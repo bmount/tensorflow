@@ -3286,6 +3286,13 @@ def sigmoid(x, name=None):
 
   Returns:
     A Tensor with the same type as `x`.
+  
+  Usage Example:
+  
+  >>> x = tf.constant([-128.0, 0.0, 128.0], dtype=tf.float32)
+  >>> tf.sigmoid(x)
+  <tf.Tensor: shape=(3,), dtype=float32,
+  numpy=array([0. , 0.5, 1. ], dtype=float32)>
 
   @compatibility(scipy)
   Equivalent to scipy.special.expit
@@ -4564,7 +4571,7 @@ def exp(x, name=None):
 
 
 @tf_export("math.sobol_sample")
-def sobol_sample(dim, num_results, skip=0, dtype=None, name=None):
+def sobol_sample(dim, num_results, skip=0, dtype=dtypes.float32, name=None):
   """Generates points from the Sobol sequence.
 
   Creates a Sobol sequence with `num_results` samples. Each sample has dimension
@@ -4576,8 +4583,8 @@ def sobol_sample(dim, num_results, skip=0, dtype=None, name=None):
         points to return in the output.
     skip: (Optional) Positive scalar `Tensor` of dtype int32. The number of
         initial points of the Sobol sequence to skip. Default value is 0.
-    dtype: (Optional) The dtype of the sample. One of: `float32` or `float64`.
-        Default value is determined by the C++ kernel.
+    dtype: (Optional) The `tf.Dtype` of the sample. One of: `tf.float32` or
+        `tf.float64`. Defaults to `tf.float32`.
     name: (Optional) Python `str` name prefixed to ops created by this function.
 
   Returns:

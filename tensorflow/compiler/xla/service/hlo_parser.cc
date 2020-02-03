@@ -635,6 +635,7 @@ bool HloParserImpl::ParseInstructionList(HloComputation** computation,
     // This means some instruction was marked as ROOT but we didn't find it in
     // the pool, which should not happen.
     if (root_node == nullptr) {
+      // LOG(FATAL) crashes the program by calling abort().
       LOG(FATAL) << "instruction " << root_name
                  << " was marked as ROOT but the parser has not seen it before";
     }
@@ -1028,6 +1029,9 @@ bool HloParserImpl::ParseInstructionRhs(HloComputation::Builder* builder,
           !ParseAttributes(attrs)) {
         return false;
       }
+      if (dynamic_cast<const HloChannelInstruction*>(operands[0]) == nullptr) {
+        return false;
+      }
       if (channel_id != operands[0]->channel_id()) {
         return false;
       }
@@ -1059,6 +1063,9 @@ bool HloParserImpl::ParseInstructionRhs(HloComputation::Builder* builder,
                                    &is_host_transfer};
       if (!ParseOperands(&operands, /*expected_size=*/1) ||
           !ParseAttributes(attrs)) {
+        return false;
+      }
+      if (dynamic_cast<const HloChannelInstruction*>(operands[0]) == nullptr) {
         return false;
       }
       if (channel_id != operands[0]->channel_id()) {
@@ -2997,16 +3004,20 @@ bool HloParserImpl::CopyAttributeToProtoMessage(
     bool success = [&] {
       switch (fd->type()) {
         case tensorflow::protobuf::FieldDescriptor::TYPE_BOOL: {
-          reflection->SetBool(
-              message, fd, **(static_cast<optional<bool>*>(p.second.result)));
+          auto attr_value = static_cast<optional<bool>*>(p.second.result);
+          if (attr_value->has_value()) {
+            reflection->SetBool(message, fd, **attr_value);
+          }
           return true;
         }
         case tensorflow::protobuf::FieldDescriptor::TYPE_ENUM: {
-          std::string value =
-              **(static_cast<optional<std::string>*>(p.second.result));
-          const tensorflow::protobuf::EnumValueDescriptor* evd =
-              fd->enum_type()->FindValueByName(value);
-          reflection->SetEnum(message, fd, evd);
+          auto attr_value =
+              static_cast<optional<std::string>*>(p.second.result);
+          if (attr_value->has_value()) {
+            const tensorflow::protobuf::EnumValueDescriptor* evd =
+                fd->enum_type()->FindValueByName(**attr_value);
+            reflection->SetEnum(message, fd, evd);
+          }
           return true;
         }
         default:

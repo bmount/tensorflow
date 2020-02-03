@@ -43,6 +43,7 @@ from tensorflow.python.data.util import structure
 from tensorflow.python.data.util import traverse
 from tensorflow.python.eager import context
 from tensorflow.python.eager import function as eager_function
+from tensorflow.python.framework import auto_control_deps
 from tensorflow.python.framework import composite_tensor
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import dtypes
@@ -1035,7 +1036,7 @@ class DatasetV2(tracking_base.Trackable, composite_tensor.CompositeTensor):
         Defaults to `True`.
       seed: (Optional.) A `tf.int64` scalar `tf.Tensor`, representing the random
         seed that will be used to create the distribution. See
-        `tf.compat.v1.set_random_seed` for behavior.
+        `tf.random.set_seed` for behavior.
 
     Returns:
      Dataset: A `Dataset` of strings corresponding to file names.
@@ -1173,7 +1174,7 @@ class DatasetV2(tracking_base.Trackable, composite_tensor.CompositeTensor):
         elements from this dataset from which the new dataset will sample.
       seed: (Optional.) A `tf.int64` scalar `tf.Tensor`, representing the random
         seed that will be used to create the distribution. See
-        `tf.compat.v1.set_random_seed` for behavior.
+        `tf.random.set_seed` for behavior.
       reshuffle_each_iteration: (Optional.) A boolean, which if true indicates
         that the dataset should be pseudorandomly reshuffled each time it is
         iterated over. (Defaults to `True`.)
@@ -1395,11 +1396,10 @@ class DatasetV2(tracking_base.Trackable, composite_tensor.CompositeTensor):
     determines the resulting shape for each dimension of each component in an
     output element:
 
-    * If the dimension is a constant (e.g. `tf.compat.v1.Dimension(37)`), the
-    component will be padded out to that length in that dimension.
-    * If the dimension is unknown (e.g. `tf.compat.v1.Dimension(None)`), the
-    component will be padded out to the maximum length of all elements in that
-    dimension.
+    * If the dimension is a constant, the component will be padded out to that
+      length in that dimension.
+    * If the dimension is unknown, the component will be padded out to the
+      maximum length of all elements in that dimension.
 
     >>> A = (tf.data.Dataset
     ...      .range(1, 5, output_type=tf.int32)
@@ -1451,11 +1451,10 @@ class DatasetV2(tracking_base.Trackable, composite_tensor.CompositeTensor):
       padded_shapes: (Optional.) A nested structure of `tf.TensorShape` or
         `tf.int64` vector tensor-like objects representing the shape to which
         the respective component of each input element should be padded prior
-        to batching. Any unknown dimensions (e.g. `tf.compat.v1.Dimension(None)`
-        in a `tf.TensorShape` or `-1` in a tensor-like object) will be padded to
-        the maximum size of that dimension in each batch. If unset all
-        dimensions of all components are padded to the maximum size in the
-        batch. `padded_shapes` must be set if any component has an unknown rank.
+        to batching. Any unknown dimensions will be padded to the maximum size
+        of that dimension in each batch. If unset, all dimensions of all
+        components are padded to the maximum size in the batch. `padded_shapes`
+        must be set if any component has an unknown rank.
       padding_values: (Optional.) A nested structure of scalar-shaped
         `tf.Tensor`, representing the padding values to use for the respective
         components. None represents that the nested structure should be padded
@@ -1952,32 +1951,10 @@ name=None))
     [1, 2, 3, 1, 2, 1, 2, 3, 4]
 
     Returns:
-      A `Dataset` transformation function, which can be passed to
-      `tf.data.Dataset.apply`.
+      A `Dataset`.
     """
-
-    # NOTE(mrry): We must ensure that any non-tensor components in `dataset`
-    # are normalized to their dense tensor representation, so that the
-    # non-tensor oblivious unbatching logic will slice them appropriately.
-    # This leads to a somewhat inefficient re-encoding step for all non-tensor
-    # components.
-    #
-    # TODO(mrry): Consider optimizing this if it turns out to be a bottleneck.
-    def normalize(arg, *rest):
-      # pylint: disable=protected-access
-      if rest:
-        return structure.to_batched_tensor_list(self.element_spec,
-                                                (arg,) + rest)
-      else:
-        return structure.to_batched_tensor_list(self.element_spec, arg)
-
-    normalized_dataset = self.map(normalize)
-
-    # NOTE(mrry): Our `map()` has lost information about the structure of
-    # non-tensor components, so re-apply the structure of the original dataset.
-    restructured_dataset = _RestructuredDataset(normalized_dataset,
-                                                self.element_spec)
-    return _UnbatchDataset(restructured_dataset)
+    normalized_dataset = normalize_to_dense(self)
+    return _UnbatchDataset(normalized_dataset)
 
   def with_options(self, options):
     """Returns a new `tf.data.Dataset` with the given options set.
@@ -2465,7 +2442,7 @@ def _ensure_same_dataset_graph(dataset):
 
 @tf_export(v1=["data.make_one_shot_iterator"])
 def make_one_shot_iterator(dataset):
-  """Creates a `tf.compat.v1.data.Iterator` for enumerating the elements of a dataset.
+  """Creates a `tf.compat.v1.data.Iterator` for enumerating dataset elements.
 
   Note: The returned iterator will be initialized automatically.
   A "one-shot" iterator does not support re-initialization.
@@ -3520,7 +3497,7 @@ class ShuffleDataset(UnaryUnchangedStructureDataset):
         elements from this dataset from which the new dataset will sample.
       seed: (Optional.) A `tf.int64` scalar `tf.Tensor`, representing the random
         seed that will be used to create the distribution. See
-        `tf.compat.v1.set_random_seed` for behavior.
+        `tf.random.set_seed` for behavior.
       reshuffle_each_iteration: (Optional.) A boolean, which if true indicates
         that the dataset should be pseudorandomly reshuffled each time it is
         iterated over. (Defaults to `True`.)
@@ -4274,6 +4251,38 @@ class _PrivateThreadPoolDataset(UnaryUnchangedStructureDataset):
                                                     variant_tensor)
 
 
+def normalize_to_dense(dataset):
+  """Normalizes non-tensor components in a dataset to dense representations.
+
+  This is necessary for dataset transformations that slice along the batch
+  dimension and are oblivious to non-tensors, e.g. `unbatch`, `rebatch`.
+
+  Args:
+    dataset: Dataset to normalize.
+
+  Returns:
+    A dataset whose sparse and ragged tensors have been normalized to their
+    dense representations.
+  """
+
+  # NOTE(mrry): This leads to a somewhat inefficient re-encoding step for all
+  # non-tensor components.
+  #
+  # TODO(mrry): Consider optimizing this if it turns out to be a bottleneck.
+  if _should_unpack_args(dataset.element_spec):
+    def normalize(*args):
+      return structure.to_batched_tensor_list(dataset.element_spec, tuple(args))
+  else:
+    def normalize(arg):
+      return structure.to_batched_tensor_list(dataset.element_spec, arg)
+
+  normalized_dataset = dataset.map(normalize)
+
+  # NOTE(mrry): Our `map()` has lost information about the structure of
+  # non-tensor components, so re-apply the structure of the original dataset.
+  return _RestructuredDataset(normalized_dataset, dataset.element_spec)
+
+
 class _RestructuredDataset(UnaryDataset):
   """An internal helper for changing the structure and shape of a dataset."""
 
@@ -4316,3 +4325,63 @@ class _UnbatchDataset(UnaryDataset):
   @property
   def element_spec(self):
     return self._structure
+
+
+def _collect_resource_inputs(op):
+  """Collects resource inputs for the given ops (and its variant inputs)."""
+
+  def _process(op_queue, seen_ops):
+    """Processes the next element of the op queue."""
+
+    result = []
+    op = op_queue.pop()
+    if op in seen_ops:
+      return result
+    seen_ops.add(op)
+    for t in op.inputs:
+      if t.dtype == dtypes.variant:
+        # Conservatively assume that any variant inputs are datasets.
+        op_queue.append(t.op)
+      elif t.dtype == dtypes.resource:
+        result.append(t)
+    return result
+
+  op_queue = [op]
+  seen_ops = set()
+  resource_inputs = []
+  while op_queue:
+    resource_inputs.extend(_process(op_queue, seen_ops))
+
+  return resource_inputs
+
+
+@auto_control_deps.register_acd_resource_resolver
+def _resource_resolver(op, resource_inputs):
+  """Updates resource inputs for tf.data ops with indirect dependencies."""
+
+  updated = False
+  if op.type in [
+      "DatasetToSingleElement", "DatasetToTFRecord", "ReduceDataset"
+  ]:
+    indirect_resource_inputs = _collect_resource_inputs(op)
+    for inp in indirect_resource_inputs:
+      if inp not in resource_inputs:
+        updated = True
+        resource_inputs.add(inp)
+
+  if op.type in [
+      "IteratorGetNext", "IteratorGetNextSync", "IteratorGetNextAsOptional"
+  ]:
+    iterator_resource = op.inputs[0]
+    make_iterator_ops = [
+        op for op in iterator_resource.consumers() if op.type == "MakeIterator"
+    ]
+
+    if len(make_iterator_ops) == 1:
+      indirect_resource_inputs = _collect_resource_inputs(make_iterator_ops[0])
+      for inp in indirect_resource_inputs:
+        if inp not in resource_inputs:
+          updated = True
+          resource_inputs.add(inp)
+
+  return updated

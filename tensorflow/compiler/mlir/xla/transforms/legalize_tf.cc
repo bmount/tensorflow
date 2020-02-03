@@ -1777,8 +1777,7 @@ class ConvertStridedSliceOp : public OpRewritePattern<TF::StridedSliceOp> {
     if (!result_ty || !result_ty.hasStaticShape()) return matchFailure();
 
     SmallVector<int64_t, 4> begin_indices, end_indices, strides;
-    if (!op.GetSlicedBoundRanges(input_shape, &begin_indices, &end_indices,
-                                 &strides))
+    if (!op.GetSlicedBoundRanges(&begin_indices, &end_indices, &strides))
       return matchFailure();
 
     SmallVector<int64_t, 4> hlo_begin_indices, hlo_end_indices, hlo_strides,
@@ -1820,12 +1819,13 @@ class ConvertStridedSliceOp : public OpRewritePattern<TF::StridedSliceOp> {
     }
 
     Location loc = op.getLoc();
-    auto reversed = rewriter.create<ReverseOp>(
-        loc, input_ty, op.input(),
-        GetI64ElementsAttr(dims_to_reverse, &rewriter));
+    Value input = op.input();
+    if (!dims_to_reverse.empty())
+      input = rewriter.create<ReverseOp>(
+          loc, input_ty, op.input(),
+          GetI64ElementsAttr(dims_to_reverse, &rewriter));
     auto sliced = rewriter.create<SliceOp>(
-        loc, reversed.getResult(),
-        GetI64ElementsAttr(hlo_begin_indices, &rewriter),
+        loc, input, GetI64ElementsAttr(hlo_begin_indices, &rewriter),
         GetI64ElementsAttr(hlo_end_indices, &rewriter),
         GetI64ElementsAttr(hlo_strides, &rewriter));
 
@@ -2006,7 +2006,7 @@ class GenericConvertReductionOp : public OpRewritePattern<OpTy> {
         rewriter.create<ConvertOp>(loc, op.input(), reduce_element_type);
 
     // Each reduction op can have a different initial value.
-    Value init = Derived::GetInitialValue(reduce_element_type, loc, rewriter);
+    Value init = Derived::GetInitialValue(reduce_element_type, loc, &rewriter);
 
     auto reduction = rewriter.create<ReduceOp>(
         loc, casted_input.getResult(), init,
@@ -2040,7 +2040,7 @@ class GenericConvertReductionOp : public OpRewritePattern<OpTy> {
     if (op.keep_dims()) {
       result = rewriter.create<ReshapeOp>(loc, op.getType(), result);
     }
-    rewriter.replaceOp(op, {result}, {op.reduction_indices()});
+    rewriter.replaceOp(op, {result});
 
     return this->matchSuccess();
   }
@@ -2058,8 +2058,8 @@ class ConvertMeanOp
  public:
   using GenericConvertReductionOp::GenericConvertReductionOp;
   static Value GetInitialValue(Type reduce_element_type, Location loc,
-                               PatternRewriter &rewriter) {
-    return GetScalarConstOfType(reduce_element_type, loc, 0, &rewriter);
+                               PatternRewriter *rewriter) {
+    return GetScalarConstOfType(reduce_element_type, loc, 0, rewriter);
   }
 };
 
@@ -2074,8 +2074,8 @@ class ConvertSumOp
   using GenericConvertReductionOp::GenericConvertReductionOp;
 
   static Value GetInitialValue(Type reduce_element_type, Location loc,
-                               PatternRewriter &rewriter) {
-    return GetScalarConstOfType(reduce_element_type, loc, 0, &rewriter);
+                               PatternRewriter *rewriter) {
+    return GetScalarConstOfType(reduce_element_type, loc, 0, rewriter);
   }
 };
 
@@ -2091,8 +2091,41 @@ class ConvertMaxOp
   using GenericConvertReductionOp::GenericConvertReductionOp;
 
   static Value GetInitialValue(Type reduce_element_type, Location loc,
-                               PatternRewriter &rewriter) {
-    return GetMinValueForType(reduce_element_type, loc, &rewriter);
+                               PatternRewriter *rewriter) {
+    return GetMinValueForType(reduce_element_type, loc, rewriter);
+  }
+};
+
+// Converts Min op to HLO Reduce op.
+//
+//   %init = constant dense<...> : tensor<T>
+//   %min = "xla_hlo.reduce"(%inp, %init) ["xla_hlo.min"]
+//               {dimensions = ...}
+class ConvertMinOp
+    : public GenericConvertReductionOp<ConvertMinOp, TF::MinOp, MinOp,
+                                       /* is_accumulation= */ false> {
+ public:
+  using GenericConvertReductionOp::GenericConvertReductionOp;
+
+  static Value GetInitialValue(Type reduce_element_type, Location loc,
+                               PatternRewriter *rewriter) {
+    return GetMaxValueForType(reduce_element_type, loc, rewriter);
+  }
+};
+
+// Converts Prod op to HLO Reduce op.
+//
+//   %init = constant dense<...> : tensor<T>
+//   %prod = "xla_hlo.reduce"(%inp, %init) ["xla_hlo.mul"]
+//               {dimensions = ...}
+class ConvertProdOp
+    : public GenericConvertReductionOp<ConvertProdOp, TF::ProdOp, MulOp> {
+ public:
+  using GenericConvertReductionOp::GenericConvertReductionOp;
+
+  static Value GetInitialValue(Type reduce_element_type, Location loc,
+                               PatternRewriter *rewriter) {
+    return GetScalarConstOfType(reduce_element_type, loc, 1, rewriter);
   }
 };
 
@@ -2106,8 +2139,8 @@ class ConvertAllOp
  public:
   using GenericConvertReductionOp::GenericConvertReductionOp;
   static Value GetInitialValue(Type reduce_element_type, Location loc,
-                               PatternRewriter &rewriter) {
-    return GetScalarConstOfType(reduce_element_type, loc, 1, &rewriter);
+                               PatternRewriter *rewriter) {
+    return GetScalarConstOfType(reduce_element_type, loc, 1, rewriter);
   }
 };
 
@@ -2121,8 +2154,8 @@ class ConvertAnyOp
  public:
   using GenericConvertReductionOp::GenericConvertReductionOp;
   static Value GetInitialValue(Type reduce_element_type, Location loc,
-                               PatternRewriter &rewriter) {
-    return GetScalarConstOfType(reduce_element_type, loc, 0, &rewriter);
+                               PatternRewriter *rewriter) {
+    return GetScalarConstOfType(reduce_element_type, loc, 0, rewriter);
   }
 };
 
@@ -2338,7 +2371,7 @@ class ConvertTileOp : public OpRewritePattern<TF::TileOp> {
       result = rewriter.create<ReshapeOp>(loc, output_type, result);
     }
 
-    rewriter.replaceOp(op, {result}, {op.multiples()});
+    rewriter.replaceOp(op, {result});
 
     return matchSuccess();
   }
@@ -2385,7 +2418,7 @@ class ConvertMaxPoolGradOp : public OpRewritePattern<TF::MaxPoolGradOp> {
       rewriter.create<ReturnOp>(loc, reducer.getResult());
     }
 
-    rewriter.replaceOp(op, {result}, {op.orig_output()});
+    rewriter.replaceOp(op, {result});
 
     return matchSuccess();
   }
@@ -2530,7 +2563,7 @@ class ConvertConv2DBackpropInputOp
         /*batch_group_count=*/rewriter.getI64IntegerAttr(1),
         /*precision_config=*/ArrayAttr());
 
-    rewriter.replaceOp(op, {result}, {op.input_sizes()});
+    rewriter.replaceOp(op, {result});
 
     return matchSuccess();
   }
@@ -2732,7 +2765,7 @@ class ConvertConv2DBackpropFilterOp
         /*batch_group_count=*/rewriter.getI64IntegerAttr(1),
         /*precision_config=*/ArrayAttr());
 
-    rewriter.replaceOp(op, {result}, {op.filter_sizes()});
+    rewriter.replaceOp(op, {result});
 
     return matchSuccess();
   }
@@ -2784,9 +2817,7 @@ class ConvertOneHotOp : public OpRewritePattern<TF::OneHotOp> {
     Value result = rewriter.create<SelectOp>(loc, op.getType(), compare,
                                              on_value, off_value);
 
-    rewriter.replaceOp(
-        op, {result},
-        {op.indices(), op.on_value(), op.depth(), op.off_value()});
+    rewriter.replaceOp(op, {result});
 
     return matchSuccess();
   }
@@ -3087,7 +3118,7 @@ class GenericConvertUnsortedSegmentReductionOp : public OpRewritePattern<OpTy> {
     // Broadccast the initial value for reduction. This will become the
     // 'operand' parameter to scatter to for the final scatter op.
     Value init = ConcreteClass::GetInitialValue(data_type.getElementType(),
-                                                op.getLoc(), rewriter);
+                                                op.getLoc(), &rewriter);
     auto broadcasted_init = rewriter.create<xla_hlo::BroadcastOp>(
         op.getLoc(), output_type, init,
         GetI64ElementsAttr(output_shape, &rewriter));
@@ -3123,8 +3154,8 @@ class ConvertUnsortedSegmentMaxOp
       GenericConvertUnsortedSegmentReductionOp;
 
   static Value GetInitialValue(Type reduce_element_type, Location loc,
-                               PatternRewriter &rewriter) {
-    return GetMinValueForType(reduce_element_type, loc, &rewriter);
+                               PatternRewriter *rewriter) {
+    return GetMinValueForType(reduce_element_type, loc, rewriter);
   }
 };
 
@@ -3136,8 +3167,8 @@ class ConvertUnsortedSegmentMinOp
       GenericConvertUnsortedSegmentReductionOp;
 
   static Value GetInitialValue(Type reduce_element_type, Location loc,
-                               PatternRewriter &rewriter) {
-    return GetMaxValueForType(reduce_element_type, loc, &rewriter);
+                               PatternRewriter *rewriter) {
+    return GetMaxValueForType(reduce_element_type, loc, rewriter);
   }
 };
 
@@ -3149,8 +3180,8 @@ class ConvertUnsortedSegmentProdOp
       GenericConvertUnsortedSegmentReductionOp;
 
   static Value GetInitialValue(Type reduce_element_type, Location loc,
-                               PatternRewriter &rewriter) {
-    return GetScalarConstOfType(reduce_element_type, loc, 1, &rewriter);
+                               PatternRewriter *rewriter) {
+    return GetScalarConstOfType(reduce_element_type, loc, 1, rewriter);
   }
 };
 
@@ -3162,8 +3193,8 @@ class ConvertUnsortedSegmentSumOp
       GenericConvertUnsortedSegmentReductionOp;
 
   static Value GetInitialValue(Type reduce_element_type, Location loc,
-                               PatternRewriter &rewriter) {
-    return GetScalarConstOfType(reduce_element_type, loc, 0, &rewriter);
+                               PatternRewriter *rewriter) {
+    return GetScalarConstOfType(reduce_element_type, loc, 0, rewriter);
   }
 };
 
@@ -3391,10 +3422,11 @@ LogicalResult legalizeTF(Operation *op, bool allow_partial_conversion) {
       ConvertConv2DBackpropInputOp, ConvertEinsumOp,
       ConvertFusedBatchNormGradOp, ConvertFusedBatchNormGradV2Op,
       ConvertFusedBatchNormGradV3Op, ConvertFusedBatchNormV3Op,
-      ConvertInfeedDequeueTupleOp, ConvertMaxOp, ConvertAvgPoolOp,
+      ConvertInfeedDequeueTupleOp, ConvertMaxOp, ConvertMinOp, ConvertAvgPoolOp,
       ConvertMaxPoolOp, ConvertMaxPoolGradOp, ConvertMeanOp, ConvertOneHotOp,
-      ConvertOutfeedEnqueueTupleOp, ConvertRangeOp, ConvertSelectV2Op,
-      ConvertSigmoidOp, ConvertSizeOp, ConvertSoftmaxOp<TF::LogSoftmaxOp, true>,
+      ConvertOutfeedEnqueueTupleOp, ConvertProdOp, ConvertRangeOp,
+      ConvertSelectV2Op, ConvertSigmoidOp, ConvertSizeOp,
+      ConvertSoftmaxOp<TF::LogSoftmaxOp, true>,
       ConvertSoftmaxOp<TF::SoftmaxOp, false>, ConvertSplitOp, ConvertSplitVOp,
       ConvertStridedSliceOp, ConvertStridedSliceGradOp, ConvertSumOp,
       ConvertTensorScatterUpdateOp, ConvertTileOp, ConvertTopKV2Op,

@@ -19,7 +19,6 @@ limitations under the License.
 
 #include <atomic>
 #include <functional>
-#include <mutex>  // NOLINT(build/c++11): only using std::call_once, not mutex.
 #include <utility>
 
 #include "absl/memory/memory.h"
@@ -36,6 +35,7 @@ limitations under the License.
 #include "tensorflow/compiler/xla/service/buffer_assignment.h"
 #include "tensorflow/compiler/xla/service/call_inliner.h"
 #include "tensorflow/compiler/xla/service/conditional_simplifier.h"
+#include "tensorflow/compiler/xla/service/convolution_4d_expander.h"
 #include "tensorflow/compiler/xla/service/convolution_group_converter.h"
 #include "tensorflow/compiler/xla/service/depthwise_convolution_converter.h"
 #include "tensorflow/compiler/xla/service/dot_decomposer.h"
@@ -139,6 +139,8 @@ Status GpuCompiler::OptimizeHloModule(
     pipeline.AddPass<CallInliner>();
 
     pipeline.AddPass<DotDecomposer>();
+
+    pipeline.AddPass<Convolution4DExpander>();
 
     auto cost_model = [](HloInstruction*) {
       // We need a cost model for GPUs. Currently, do nothing.
@@ -372,7 +374,8 @@ StatusOr<std::unique_ptr<Executable>> GpuCompiler::RunBackend(
           /*allocate_buffers_for_constants=*/true,
           /*colorer=*/BufferAssigner::DefaultColorer(),
           /*must_not_live_out=*/{}, GetCanShareBuffer()));
-  DumpHloModuleIfEnabled(*module, *buffer_assignment, "after_optimizations");
+  DumpHloModuleIfEnabled(*module, *buffer_assignment, "",
+                         "after_optimizations");
 
   IrEmitterContext ir_emitter_context(
       module.get(), buffer_assignment.get(), stream_exec->platform(),
@@ -426,7 +429,7 @@ StatusOr<std::unique_ptr<Executable>> GpuCompiler::RunBackend(
       ir_emitter.ConsumeThunkSequence(), std::move(stream_assignment),
       hlo_schedule->ThunkLaunchOrder());
   if (DumpingEnabledForHloModule(*module)) {
-    DumpToFileInDirOrStdout(*module, "thunk_schedule",
+    DumpToFileInDirOrStdout(*module, "", "thunk_schedule",
                             thunk_schedule->ToString());
   }
 

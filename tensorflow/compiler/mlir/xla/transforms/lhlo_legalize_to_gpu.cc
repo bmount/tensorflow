@@ -35,7 +35,7 @@ limitations under the License.
 #include "mlir/Pass/Pass.h"  // TF:llvm-project
 #include "mlir/Transforms/DialectConversion.h"  // TF:llvm-project
 #include "tensorflow/compiler/mlir/xla/ir/lhlo_ops.h"
-#include "tensorflow/compiler/mlir/xla/transforms/map_lhlo_to_scalar_op.h"
+#include "tensorflow/compiler/mlir/xla/transforms/map_xla_to_scalar_op.h"
 
 namespace mlir {
 namespace xla_lhlo {
@@ -167,7 +167,7 @@ class LhloReduceToGPULaunchConverter : public OpConversionPattern<ReduceOp> {
 
       // Finally, insert the terminator for the launchOp.
       rewriter.setInsertionPointToEnd(&launch_op.body().front());
-      rewriter.create<mlir::gpu::ReturnOp>(loc);
+      rewriter.create<mlir::gpu::TerminatorOp>(loc);
     }
 
     rewriter.eraseOp(reduce_op);
