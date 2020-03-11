@@ -790,8 +790,6 @@ def _ConstantValue(tensor, partial):
     return np.not_equal(value1, value2)
   elif tensor.op.type == "StopGradient":
     return constant_value(tensor.op.inputs[0], partial)
-  elif tensor.op.type == "Identity":
-    return constant_value(tensor.op.inputs[0], partial)
   else:
     return None
 
@@ -1012,7 +1010,7 @@ def shape_tensor(shape):  # pylint: disable=invalid-name
       # If there are Dimension objects in the shape, unwrap them. This can be a
       # problem if v1 and v2 TensorShape objects get mixed up in partial
       # conversions, leading to shapes such as (1, 2, Dimension(5)), which are
-      # not convertible to Tensors becasue of mixed content.
+      # not convertible to Tensors because of mixed content.
       shape = tuple(map(tensor_shape.dimension_value, shape))
   return ops.convert_to_tensor(shape, dtype=dtype, name="shape")
 

@@ -17,6 +17,13 @@ exports_files(glob([
 ]))
 
 config_setting(
+    name = "enable_default_profiler",
+    values = {
+        "copt": "-DTFLITE_ENABLE_DEFAULT_PROFILER",
+    },
+)
+
+config_setting(
     name = "gemmlowp_profiling",
     values = {
         "copt": "-DGEMMLOWP_PROFILING",
@@ -38,8 +45,14 @@ config_setting(
 )
 
 config_setting(
-    name = "tflite_experimental_runtime",
-    values = {"define": "tflite_experimental_runtime=true"},
+    name = "tflite_experimental_runtime_eager",
+    values = {"define": "tflite_experimental_runtime=eager"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "tflite_experimental_runtime_non_eager",
+    values = {"define": "tflite_experimental_runtime=non-eager"},
     visibility = ["//visibility:public"],
 )
 
@@ -181,7 +194,6 @@ cc_library(
     ],
     copts = TFLITE_DEFAULT_COPTS,
     deps = [
-        ":simple_memory_arena",
         ":string",
         "//tensorflow/lite/c:common",
         "//tensorflow/lite/core/api",
@@ -234,7 +246,12 @@ cc_library(
         "//tensorflow/lite/experimental/resource",
         "//tensorflow/lite/nnapi:nnapi_implementation",
         "//tensorflow/lite/schema:schema_fbs",
-    ],
+    ] + select({
+        ":enable_default_profiler": [
+            "//tensorflow/lite/profiling:platform_profiler",
+        ],
+        "//conditions:default": [],
+    }),
     alwayslink = 1,
 )
 
@@ -488,7 +505,7 @@ tflite_cc_shared_object(
         ":framework",
         ":tflite_exported_symbols.lds",
         ":tflite_version_script.lds",
-        "//tensorflow/lite/kernels:builtin_ops",
+        "//tensorflow/lite/kernels:builtin_ops_all_linked",
     ],
 )
 

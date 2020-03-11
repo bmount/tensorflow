@@ -69,6 +69,7 @@ cc_library(
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
         "@com_google_absl//absl/synchronization",
+        "//tensorflow/core:lib",
     ],
     alwayslink = True,  # Registers itself with the MultiPlatformManager.
 )
@@ -249,6 +250,7 @@ cc_library(
         "@local_config_cuda//cuda:cublas_headers",
         # LINT.ThenChange(//tensorflow/copy.bara.sky:cublas_headers)
         "@local_config_cuda//cuda:cuda_headers",
+        "//tensorflow/core:lib",
         "//tensorflow/core:lib_internal",
         "//tensorflow/stream_executor",
         "//tensorflow/stream_executor:event",
@@ -414,6 +416,7 @@ cc_library(
     data = if_cuda_is_configured(["@local_config_cuda//cuda:cupti_dsos"]),
     textual_hdrs = ["cupti_10_0.inc"],
     deps = if_cuda_is_configured([
+        "@local_config_cuda//cuda:cuda_headers",
         "@local_config_cuda//cuda:cupti_headers",
         "//tensorflow/stream_executor/lib",
         "//tensorflow/stream_executor/platform:dso_loader",
@@ -606,7 +609,7 @@ tf_cuda_cc_test(
         "//tensorflow/stream_executor:device_memory_allocator",
         "//tensorflow/stream_executor:event",
         "//tensorflow/stream_executor:kernel",
-        "//tensorflow/stream_executor/gpu:asm_compiler",
+        "//tensorflow/stream_executor/gpu:gpu_asm_opts",
         "//tensorflow/stream_executor/gpu:redzone_allocator",
     ],
 )

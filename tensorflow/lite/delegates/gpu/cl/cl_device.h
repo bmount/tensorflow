@@ -28,7 +28,7 @@ namespace tflite {
 namespace gpu {
 namespace cl {
 
-enum class Vendor { QUALCOMM, MALI, POWERVR, NVIDIA, UNKNOWN };
+enum class Vendor { QUALCOMM, MALI, POWERVR, NVIDIA, AMD, UNKNOWN };
 std::string VendorToString(Vendor v);
 
 enum class OpenCLVersion { CL_1_0, CL_1_1, CL_1_2, CL_2_0 };
@@ -59,6 +59,36 @@ struct AdrenoInfo {
   // Not supported on some Adreno devices with specific driver version.
   // b/131099086
   bool support_one_layer_texture_array = true;
+};
+
+enum class MaliGPU {
+  T604,
+  T622,
+  T624,
+  T628,
+  T658,
+  T678,
+  T720,
+  T760,
+  T820,
+  T830,
+  T860,
+  T880,
+  G31,
+  G51,
+  G71,
+  G52,
+  G72,
+  G76,
+  G57,
+  G77,
+  UNKNOWN
+};
+
+struct MaliInfo {
+  MaliInfo() = default;
+  explicit MaliInfo(const std::string& device_name);
+  MaliGPU gpu_version;
 };
 
 struct DeviceInfo {
@@ -98,6 +128,7 @@ struct DeviceInfo {
   bool supports_fp16_rtn;
 
   AdrenoInfo adreno_info;
+  MaliInfo mali_info;
 };
 
 // A wrapper around opencl device id
@@ -138,6 +169,7 @@ class CLDevice {
   bool IsPowerVR() const;
   bool IsNvidia() const;
   bool IsMali() const;
+  bool IsAMD() const;
 
   // To track bug on some Adreno. b/131099086
   bool SupportsOneLayerTextureArray() const;

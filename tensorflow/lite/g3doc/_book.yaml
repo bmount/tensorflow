@@ -42,6 +42,11 @@ upper_tabs:
         path: /lite/convert/quantization
       - title: "Convert RNN models"
         path: /lite/convert/rnn
+      - title: "1.x compatibility"
+        path: /lite/convert/1x_compatibility
+      - title: "Add metadata"
+        path: /lite/convert/metadata
+        status: experimental
 
       - heading: "Inference"
       - title: "Overview"
@@ -54,8 +59,12 @@ upper_tabs:
         path: /lite/guide/ops_compatibility
       - title: "Select operators from TensorFlow"
         path: /lite/guide/ops_select
+        status: experimental
       - title: "List of hosted models"
         path: /lite/guide/hosted_models
+      - title: "Generate code from metadata"
+        path: /lite/guide/codegen
+        status: experimental
 
       - heading: "Performance"
       - title: "Best practices"

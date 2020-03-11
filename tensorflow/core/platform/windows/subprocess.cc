@@ -134,7 +134,7 @@ void SubProcess::FreeArgs() {
 
 void SubProcess::ClosePipes() {
   for (int i = 0; i < kNFds; i++) {
-    if (parent_pipe_[i] >= 0) {
+    if (parent_pipe_[i] != nullptr) {
       CloseHandle(parent_pipe_[i]);
       parent_pipe_[i] = nullptr;
     }
@@ -204,7 +204,7 @@ bool SubProcess::Start() {
 
   // No need to store subprocess end of the pipes, they will be closed before
   // this function terminates.
-  HANDLE child_pipe_[kNFds] GUARDED_BY(data_mu_);
+  HANDLE child_pipe_[kNFds] TF_GUARDED_BY(data_mu_);
 
   // Create parent/child pipes for the specified channels and make the
   // parent-side of the pipes non-blocking.
@@ -272,7 +272,7 @@ bool SubProcess::Start() {
 
   if (bSuccess) {
     for (int i = 0; i < kNFds; i++) {
-      if (child_pipe_[i] >= 0) {
+      if (child_pipe_[i] != nullptr) {
         CloseHandle(child_pipe_[i]);
         child_pipe_[i] = nullptr;
       }

@@ -524,7 +524,7 @@ bool IsWhiteListedOpTypeForEvaluateNode(const string& op_type) {
           "TruncateDiv",
           "TruncateMod",
           "RealDiv",
-          // N-ary arithemtic ops
+          // N-ary arithmetic ops
           "AddN",
           // Others
           "StridedSlice",
@@ -664,14 +664,9 @@ class SymbolicShapeRefiner {
         }
       }
 
-      // Turn _Arg node into a Placeholder. _Arg node is a system op without a
-      // valid shape function.
-      *attr_output_shape.mutable_shape() = proto;
-      fun_node->set_op("Placeholder");
-      (*fun_node->mutable_attr())["dtype"] = (*fun_node->mutable_attr())["T"];
-      (*fun_node->mutable_attr()).erase("index");
-      (*fun_node->mutable_attr()).erase("T");
-      (*fun_node->mutable_attr())["shape"] = attr_output_shape;
+      AttrValue output_attr;
+      output_attr.mutable_list()->add_shape()->Swap(&proto);
+      (*fun_node->mutable_attr())["_output_shapes"] = output_attr;
     }
 
     // Replace input nodes with Consts, if values are known. Note that
@@ -1318,7 +1313,7 @@ class SymbolicShapeRefiner {
     return true;
   }
 
-  // Create input tensors from the NodeConext.
+  // Create input tensors from the NodeContext.
   void CreateInputTensors(NodeContext* c,
                           std::vector<Tensor>* input_tensor_vector,
                           TensorVector* inputs) {
@@ -1367,7 +1362,7 @@ class SymbolicShapeRefiner {
 
     // Input to EvaluateNode()
     TensorVector inputs;
-    // Container for temporaily created tensor object.
+    // Container for temporarily created tensor object.
     std::vector<Tensor> input_tensor_vector(ic->num_inputs());
     CreateInputTensors(c, &input_tensor_vector, &inputs);
 

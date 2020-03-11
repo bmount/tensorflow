@@ -734,9 +734,7 @@ cuda_py_test(
     size = "medium",
     srcs = ["lib/check_numerics_callback_test.py"],
     python_version = "PY3",
-    tags = [
-        "notap",  # b/148484328
-    ],
+    tags = ["no_windows"],
     deps = [
         ":check_numerics_callback",
         "//tensorflow/python:framework_test_lib",
@@ -873,6 +871,7 @@ py_test(
     srcs = ["lib/source_utils_test.py"],
     python_version = "PY3",
     srcs_version = "PY2AND3",
+    tags = ["no_windows"],
     deps = [
         ":debug_data",
         ":debug_utils",
