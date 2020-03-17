@@ -19,6 +19,7 @@ from __future__ import division
 from __future__ import print_function
 
 import copy
+import itertools
 
 from tensorflow.python.distribute import distribute_coordinator as dc
 from tensorflow.python.distribute import distribute_coordinator_context as dc_context
@@ -28,6 +29,7 @@ from tensorflow.python.eager import backprop
 from tensorflow.python.eager import context
 from tensorflow.python.eager import def_function
 from tensorflow.python.eager import monitoring
+from tensorflow.python.framework import ops
 from tensorflow.python.framework import sparse_tensor
 from tensorflow.python.keras import callbacks as callbacks_module
 from tensorflow.python.keras import optimizers
@@ -43,9 +45,11 @@ from tensorflow.python.keras.utils import version_utils
 from tensorflow.python.keras.utils.mode_keys import ModeKeys
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import sparse_ops
+from tensorflow.python.ops import summary_ops_v2
+from tensorflow.python.ops import variables
 from tensorflow.python.ops.ragged import ragged_concat_ops
 from tensorflow.python.ops.ragged import ragged_tensor
-from tensorflow.python.profiler import traceme
+from tensorflow.python.profiler import trace
 from tensorflow.python.training.tracking import base as trackable
 from tensorflow.python.util import deprecation
 from tensorflow.python.util import nest
@@ -161,6 +165,9 @@ class Model(network.Network, version_utils.ModelVersionSelector):
   Checkout [guide](https://www.tensorflow.org/guide/keras/overview) for
   additional details.
   """
+  _TF_MODULE_IGNORED_PROPERTIES = frozenset(
+      itertools.chain(('_train_counter', '_test_counter', '_predict_counter'),
+                      network.Network._TF_MODULE_IGNORED_PROPERTIES))  # pylint: disable=protected-access
 
   def __init__(self, *args, **kwargs):
     super(Model, self).__init__(*args, **kwargs)
@@ -185,6 +192,18 @@ class Model(network.Network, version_utils.ModelVersionSelector):
     # override compile with custom logic.
     self.compiled_loss = None
     self.compiled_metrics = None
+
+    self._init_batch_counters()
+
+  @trackable.no_automatic_dependency_tracking
+  def _init_batch_counters(self):
+    # Untracked Variables, used to keep track of mini-batches seen in `fit`,
+    # `evaluate`, and `predict`.
+    agg = variables.VariableAggregationV2.ONLY_FIRST_REPLICA
+    self._train_counter = variables.Variable(0, dtype='int64', aggregation=agg)
+    self._test_counter = variables.Variable(0, dtype='int64', aggregation=agg)
+    self._predict_counter = variables.Variable(
+        0, dtype='int64', aggregation=agg)
 
   def get_weights(self):
     """Retrieves the weights of the model.
@@ -499,11 +518,18 @@ class Model(network.Network, version_utils.ModelVersionSelector):
       return self.train_function
 
     def train_function(iterator):
+      """Runs one call to `self.train_function`."""
+
+      def run_step(data):
+        outputs = self.train_step(data)
+        self._train_counter.assign_add(1)
+        return outputs
+
       data = next(iterator)
-      outputs = self.distribute_strategy.experimental_run_v2(
-          self.train_step, args=(data,))
+      outputs = self.distribute_strategy.run(run_step, args=(data,))
       outputs = reduce_per_replica(
           outputs, self.distribute_strategy, reduction='first')
+      write_scalar_summaries(outputs, step=self._train_counter)
       return outputs
 
     if not self.run_eagerly:
@@ -762,6 +788,7 @@ class Model(network.Network, version_utils.ModelVersionSelector):
 
       self.stop_training = False
       train_function = self.make_train_function()
+      self._train_counter.assign(0)
       callbacks.on_train_begin()
       # Handle fault-tolerance for multi-worker.
       # TODO(omalleyt): Fix the ordering issues that mean this has to
@@ -773,7 +800,7 @@ class Model(network.Network, version_utils.ModelVersionSelector):
         callbacks.on_epoch_begin(epoch)
         with data_handler.catch_stop_iteration():
           for step in data_handler.steps():
-            with traceme.TraceMe(
+            with trace.Trace(
                 'TraceContext',
                 graph_type='train',
                 epoch_num=epoch,
@@ -872,9 +899,15 @@ class Model(network.Network, version_utils.ModelVersionSelector):
       return self.test_function
 
     def test_function(iterator):
+      """Runs one call to `self.test_function`."""
+
+      def run_step(data):
+        outputs = self.test_step(data)
+        self._test_counter.assign_add(1)
+        return outputs
+
       data = next(iterator)
-      outputs = self.distribute_strategy.experimental_run_v2(
-          self.test_step, args=(data,))
+      outputs = self.distribute_strategy.run(run_step, args=(data,))
       outputs = reduce_per_replica(
           outputs, self.distribute_strategy, reduction='first')
       return outputs
@@ -1003,15 +1036,13 @@ class Model(network.Network, version_utils.ModelVersionSelector):
             steps=data_handler.inferred_steps)
 
       test_function = self.make_test_function()
+      self._test_counter.assign(0)
       callbacks.on_test_begin()
       for _, iterator in data_handler.enumerate_epochs():  # Single epoch.
         self.reset_metrics()
         with data_handler.catch_stop_iteration():
           for step in data_handler.steps():
-            with traceme.TraceMe(
-                'TraceContext',
-                graph_type='test',
-                step_num=step):
+            with trace.Trace('TraceContext', graph_type='test', step_num=step):
               callbacks.on_test_batch_begin(step)
               tmp_logs = test_function(iterator)
               # Catch OutOfRangeError for Datasets of unknown size.
@@ -1078,9 +1109,15 @@ class Model(network.Network, version_utils.ModelVersionSelector):
       return self.predict_function
 
     def predict_function(iterator):
+      """Runs one call to `self.predict_function`."""
+
+      def run_step(data):
+        outputs = self.predict_step(data)
+        self._predict_counter.assign_add(1)
+        return outputs
+
       data = next(iterator)
-      outputs = self.distribute_strategy.experimental_run_v2(
-          self.predict_step, args=(data,))
+      outputs = self.distribute_strategy.run(run_step, args=(data,))
       outputs = reduce_per_replica(
           outputs, self.distribute_strategy, reduction='concat')
       return outputs
@@ -1195,6 +1232,7 @@ class Model(network.Network, version_utils.ModelVersionSelector):
             steps=data_handler.inferred_steps)
 
       predict_function = self.make_predict_function()
+      self._predict_counter.assign(0)
       callbacks.on_predict_begin()
       for _, iterator in data_handler.enumerate_epochs():  # Single epoch.
         with data_handler.catch_stop_iteration():
@@ -1737,3 +1775,13 @@ def _minimize(tape, optimizer, loss, trainable_variables):
                                 all_reduce_sum_gradients=False)
     else:
       optimizer.apply_gradients(zip(gradients, trainable_variables))
+
+
+def _is_scalar(x):
+  return isinstance(x, (ops.Tensor, variables.Variable)) and x.shape.rank == 0
+
+
+def write_scalar_summaries(logs, step):
+  for name, value in logs.items():
+    if _is_scalar(value):
+      summary_ops_v2.scalar('batch_' + name, value, step=step)

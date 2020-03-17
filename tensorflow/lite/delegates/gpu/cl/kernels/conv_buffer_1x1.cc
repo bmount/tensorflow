@@ -211,15 +211,46 @@ ConvBuffer1x1::ConvParams GetBestParams(const CLDevice& device,
   if (!device.IsMali()) {
     return conv_params;
   }
-  const int width = shape.w * shape.b;
-  if (width % 2 == 0) {
-    conv_params.element_size = 8;
+  bool can_use_flt8 = (shape.w * shape.b) % 2 == 0 &&
+                      definition.precision != CalculationsPrecision::F32;
+  bool is_midgard = device.IsMali() && device.GetInfo().mali_info.IsMidgard();
+  if (is_midgard) {
+    if (can_use_flt8) {
+      conv_params.element_size = 8;
+    }
+    if (definition.precision == CalculationsPrecision::F16 || !can_use_flt8) {
+      conv_params.block_size.x = 2;
+    }
+    return conv_params;
   }
-  if (device.GetInfo().compute_units_count <= 4) {
-    if (definition.precision == CalculationsPrecision::F16) {
-      conv_params.block_size.x *= 2;
+
+  int task_size = shape.w * shape.b * shape.h * dst_depth;
+  int block_size =
+      GetRecommendedBlockSizeForConv(device, definition.precision, task_size);
+
+  if (!can_use_flt8 && block_size > 4) {
+    block_size = 4;
+  }
+
+  if (can_use_flt8 && block_size >= 2) {
+    conv_params.element_size = 8;
+    block_size /= 2;
+  }
+  if (block_size == 4) {
+    conv_params.block_size.x = 2;
+    if (definition.precision == CalculationsPrecision::F32 && dst_depth < 32) {
+      conv_params.block_size.y = 2;
+    } else {
+      conv_params.block_size.z = 2;
+    }
+  } else if (block_size == 2) {
+    if (dst_depth >= 32) {
+      conv_params.block_size.z = 2;
+    } else {
+      conv_params.block_size.x = 2;
     }
   }
+
   return conv_params;
 }
 

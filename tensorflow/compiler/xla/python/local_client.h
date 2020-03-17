@@ -214,7 +214,7 @@ class PyLocalBuffer {
       Device* device);
 
   static StatusOr<std::unique_ptr<PyLocalBuffer>> MakeTuple(
-      const std::vector<PyLocalBuffer*> buffers, PyLocalClient* client,
+      absl::Span<PyLocalBuffer* const> buffers, PyLocalClient* client,
       Device* device);
 
   // Asynchronously makes a vector of PyLocalBuffers that can be used to receive
@@ -312,16 +312,32 @@ class PyLocalBuffer {
   std::shared_ptr<HostValue> host_value_ TF_GUARDED_BY(mu_);
 };
 
+struct CompileOptions {
+  // The layouts of the arguments that the computation should expect.
+  absl::optional<std::vector<Shape>> argument_layouts;
+
+  // XLA's compilation time options.
+  ExecutableBuildOptions executable_build_options;
+};
+
+struct ExecuteOptions {
+  // If true, the arguments to the computation will be wrapped in a tuple and
+  // passed as a single parameter.
+  bool tuple_arguments = false;
+
+  // If true, the computation must return a tuple, which will be destructured
+  // into its elements.
+  bool untuple_result = false;
+};
+
 // Represents a compiled computation that can be executed given handles to
 // device-allocated literals. Wraps one or more XLA LocalExecutables (one per
 // partition, as specified by the build options).
 class PyLocalExecutable {
  public:
   static StatusOr<std::unique_ptr<PyLocalExecutable>> Compile(
-      const XlaComputation& computation,
-      absl::optional<std::vector<Shape>> argument_layouts,
-      const ExecutableBuildOptions* build_options, PyLocalClient* client,
-      absl::optional<DeviceAssignment> device_assignment);
+      const XlaComputation& computation, PyLocalClient* client,
+      CompileOptions options);
 
   PyLocalExecutable(std::vector<std::unique_ptr<LocalExecutable>> executables,
                     DeviceAssignment device_assignment, PyLocalClient* client);
@@ -358,24 +374,27 @@ class PyLocalExecutable {
 
   const std::vector<Device*>& local_devices() const { return local_devices_; }
 
-  StatusOr<std::unique_ptr<PyLocalBuffer>> Execute(
-      absl::Span<PyLocalBuffer* const> argument_handles) const;
+  StatusOr<std::vector<std::unique_ptr<PyLocalBuffer>>> Execute(
+      absl::Span<PyLocalBuffer* const> argument_handles,
+      const ExecuteOptions& options) const;
 
   // Execute on local devices. Takes a sequence of argument lists (one argument
   // list per local device) and returns a tuple of results (one result per local
   // device). The number of argument lists must be equal to the local device
   // count.
-  StatusOr<std::vector<std::unique_ptr<PyLocalBuffer>>> ExecuteOnLocalDevices(
-      absl::Span<const std::vector<PyLocalBuffer*>> argument_handles) const;
+  StatusOr<std::vector<std::vector<std::unique_ptr<PyLocalBuffer>>>>
+  ExecuteOnLocalDevices(
+      absl::Span<const std::vector<PyLocalBuffer*>> argument_handles,
+      const ExecuteOptions& options) const;
 
   void Delete() { executables_.clear(); }
 
   const string& name() const;
 
  private:
-  StatusOr<std::unique_ptr<PyLocalBuffer>> ExecuteHelper(
+  StatusOr<std::vector<std::unique_ptr<PyLocalBuffer>>> ExecuteHelper(
       absl::Span<PyLocalBuffer* const> argument_handles, int replica,
-      int partition, const RunId& run_id) const;
+      int partition, const RunId& run_id, const ExecuteOptions& options) const;
 
   // Create shared pointers so we can free them after the execution: with
   // asynchronous execution, the process being executed can outlive the
