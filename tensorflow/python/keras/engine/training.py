@@ -24,6 +24,7 @@ import itertools
 from tensorflow.python.distribute import distribute_coordinator as dc
 from tensorflow.python.distribute import distribute_coordinator_context as dc_context
 from tensorflow.python.distribute import distribution_strategy_context as ds_context
+from tensorflow.python.distribute import parameter_server_strategy
 from tensorflow.python.distribute import values as ds_values
 from tensorflow.python.eager import backprop
 from tensorflow.python.eager import context
@@ -44,6 +45,7 @@ from tensorflow.python.keras.utils import tf_utils
 from tensorflow.python.keras.utils import version_utils
 from tensorflow.python.keras.utils.mode_keys import ModeKeys
 from tensorflow.python.ops import array_ops
+from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import sparse_ops
 from tensorflow.python.ops import summary_ops_v2
 from tensorflow.python.ops import variables
@@ -166,7 +168,8 @@ class Model(network.Network, version_utils.ModelVersionSelector):
   additional details.
   """
   _TF_MODULE_IGNORED_PROPERTIES = frozenset(
-      itertools.chain(('_train_counter', '_test_counter', '_predict_counter'),
+      itertools.chain(('_train_counter', '_test_counter', '_predict_counter',
+                       '_steps_per_execution'),
                       network.Network._TF_MODULE_IGNORED_PROPERTIES))  # pylint: disable=protected-access
 
   def __init__(self, *args, **kwargs):
@@ -274,65 +277,71 @@ class Model(network.Network, version_utils.ModelVersionSelector):
               loss_weights=None,
               sample_weight_mode=None,
               weighted_metrics=None,
+              run_eagerly=None,
               **kwargs):
     """Configures the model for training.
 
     Arguments:
-        optimizer: String (name of optimizer) or optimizer instance.
-            See `tf.keras.optimizers`.
+        optimizer: String (name of optimizer) or optimizer instance. See
+          `tf.keras.optimizers`.
         loss: String (name of objective function), objective function or
-            `tf.keras.losses.Loss` instance. See `tf.keras.losses`.
-            An objective function is any callable with the signature
-            `loss = fn(y_true, y_pred)`, where
-            y_true = ground truth values with shape = `[batch_size, d0, .. dN]`,
-            except sparse loss functions such as sparse categorical crossentropy
-            where shape = `[batch_size, d0, .. dN-1]`.
-            y_pred = predicted values with shape = `[batch_size, d0, .. dN]`.
-            It returns a weighted loss float tensor.
-            If a custom `Loss` instance is used and reduction is set to NONE,
-            return value has the shape [batch_size, d0, .. dN-1] ie. per-sample
-            or per-timestep loss values; otherwise, it is a scalar.
-            If the model has multiple outputs, you can use a different loss on
-            each output by passing a dictionary or a list of losses. The loss
-            value that will be minimized by the model will then be the sum of
-            all individual losses.
+          `tf.keras.losses.Loss` instance. See `tf.keras.losses`. An objective
+          function is any callable with the signature `loss = fn(y_true,
+          y_pred)`, where y_true = ground truth values with shape =
+          `[batch_size, d0, .. dN]`, except sparse loss functions such as sparse
+          categorical crossentropy where shape = `[batch_size, d0, .. dN-1]`.
+          y_pred = predicted values with shape = `[batch_size, d0, .. dN]`. It
+          returns a weighted loss float tensor. If a custom `Loss` instance is
+          used and reduction is set to NONE, return value has the shape
+          [batch_size, d0, .. dN-1] ie. per-sample or per-timestep loss values;
+          otherwise, it is a scalar. If the model has multiple outputs, you can
+          use a different loss on each output by passing a dictionary or a list
+          of losses. The loss value that will be minimized by the model will
+          then be the sum of all individual losses.
         metrics: List of metrics to be evaluated by the model during training
-            and testing.
-            Each of this can be a string (name of a built-in function), function
-            or a `tf.keras.metrics.Metric` instance. See `tf.keras.metrics`.
-            Typically you will use `metrics=['accuracy']`. A function is any
-            callable with the signature `result = fn(y_true, y_pred)`.
-            To specify different metrics for different outputs of a
-            multi-output model, you could also pass a dictionary, such as
+          and testing. Each of this can be a string (name of a built-in
+          function), function or a `tf.keras.metrics.Metric` instance. See
+          `tf.keras.metrics`. Typically you will use `metrics=['accuracy']`. A
+          function is any callable with the signature `result = fn(y_true,
+          y_pred)`. To specify different metrics for different outputs of a
+          multi-output model, you could also pass a dictionary, such as
             `metrics={'output_a': 'accuracy', 'output_b': ['accuracy', 'mse']}`.
-            You can also pass a list (len = len(outputs)) of lists of metrics
-            such as `metrics=[['accuracy'], ['accuracy', 'mse']]` or
-            `metrics=['accuracy', ['accuracy', 'mse']]`.
-            When you pass the strings 'accuracy' or 'acc', we convert this to
-            one of `tf.keras.metrics.BinaryAccuracy`,
-            `tf.keras.metrics.CategoricalAccuracy`,
-            `tf.keras.metrics.SparseCategoricalAccuracy` based on the loss
-            function used and the model output shape. We do a similar conversion
-            for the strings 'crossentropy' and 'ce' as well.
-        loss_weights: Optional list or dictionary specifying scalar
-            coefficients (Python floats) to weight the loss contributions
-            of different model outputs.
-            The loss value that will be minimized by the model
-            will then be the *weighted sum* of all individual losses,
-            weighted by the `loss_weights` coefficients.
-            If a list, it is expected to have a 1:1 mapping
-            to the model's outputs. If a dict, it is expected to map
-            output names (strings) to scalar coefficients.
-        sample_weight_mode: If you need to do timestep-wise
-            sample weighting (2D weights), set this to `"temporal"`.
-            `None` defaults to sample-wise weights (1D).
-            If the model has multiple outputs, you can use a different
-            `sample_weight_mode` on each output by passing a
-            dictionary or a list of modes.
-        weighted_metrics: List of metrics to be evaluated and weighted
-            by sample_weight or class_weight during training and testing.
-        **kwargs: Any additional arguments. For eager execution, pass
-            `run_eagerly=True`.
+              You can also pass a list (len = len(outputs)) of lists of metrics
+              such as `metrics=[['accuracy'], ['accuracy', 'mse']]` or
+              `metrics=['accuracy', ['accuracy', 'mse']]`. When you pass the
+              strings 'accuracy' or 'acc', we convert this to one of
+              `tf.keras.metrics.BinaryAccuracy`,
+              `tf.keras.metrics.CategoricalAccuracy`,
+              `tf.keras.metrics.SparseCategoricalAccuracy` based on the loss
+              function used and the model output shape. We do a similar
+              conversion for the strings 'crossentropy' and 'ce' as well.
+        loss_weights: Optional list or dictionary specifying scalar coefficients
+          (Python floats) to weight the loss contributions of different model
+          outputs. The loss value that will be minimized by the model will then
+          be the *weighted sum* of all individual losses, weighted by the
+          `loss_weights` coefficients.
+            If a list, it is expected to have a 1:1 mapping to the model's
+              outputs. If a dict, it is expected to map output names (strings)
+              to scalar coefficients.
+        sample_weight_mode: If you need to do timestep-wise sample weighting (2D
+          weights), set this to `"temporal"`. `None` defaults to sample-wise
+          weights (1D). If the model has multiple outputs, you can use a
+          different `sample_weight_mode` on each output by passing a dictionary
+          or a list of modes.
+        weighted_metrics: List of metrics to be evaluated and weighted by
+          sample_weight or class_weight during training and testing.
+        run_eagerly: Bool. Defaults to `False`. If `True`, this `Model`'s
+          logic will not be wrapped in a `tf.function`. Recommended to leave
+          this as `None` unless your `Model` cannot be run inside a
+          `tf.function`.
+        **kwargs: Any additional arguments. Supported arguments:
+            `experimental_steps_per_execution`: Int. The number of batches to
+              run during each `tf.function` call. Running multiple batches
+              inside a single `tf.function` call can greatly improve performance
+              on TPUs or small models with a large Python overhead. Note that if
+              this value is set to `N`, `Callback.on_batch` methods will only be
+              called every `N` batches. This currently defaults to `1`. At most,
+              one full epoch can be run each execution.
 
     Raises:
         ValueError: In case of invalid arguments for
@@ -348,6 +357,10 @@ class Model(network.Network, version_utils.ModelVersionSelector):
           loss, loss_weights, output_names=self.output_names)
       self.compiled_metrics = compile_utils.MetricsContainer(
           metrics, weighted_metrics, output_names=self.output_names)
+
+      experimental_steps_per_execution = kwargs.pop(
+          'experimental_steps_per_execution', 1)
+      self._configure_steps_per_execution(experimental_steps_per_execution)
 
       # Initializes attrs that are reset each time `compile` is called.
       self._reset_compile_cache()
@@ -375,6 +388,13 @@ class Model(network.Network, version_utils.ModelVersionSelector):
 
     # Used to cache `trainable` attr of `Layer`s for `fit`.
     self._compiled_trainable_state = self._get_trainable_state()
+
+  @trackable.no_automatic_dependency_tracking
+  def _configure_steps_per_execution(self, steps_per_execution):
+    self._steps_per_execution = variables.Variable(
+        steps_per_execution,
+        dtype='int64',
+        aggregation=variables.VariableAggregationV2.ONLY_FIRST_REPLICA)
 
   @property
   def metrics(self):
@@ -489,7 +509,8 @@ class Model(network.Network, version_utils.ModelVersionSelector):
     #   self.optimizer.apply_gradients(zip(gradients, trainable_variables))
     # The _minimize call does a few extra steps unnecessary in most cases,
     # such as loss scaling and gradient clipping.
-    _minimize(tape, self.optimizer, loss, self.trainable_variables)
+    _minimize(self.distribute_strategy, tape, self.optimizer, loss,
+              self.trainable_variables)
 
     self.compiled_metrics.update_state(y, y_pred, sample_weight)
     return {m.name: m.result() for m in self.metrics}
@@ -517,20 +538,37 @@ class Model(network.Network, version_utils.ModelVersionSelector):
     if self.train_function is not None:
       return self.train_function
 
-    def train_function(iterator):
-      """Runs one call to `self.train_function`."""
+    def step_function(model, iterator):
+      """Runs a single training step."""
 
       def run_step(data):
-        outputs = self.train_step(data)
-        self._train_counter.assign_add(1)
+        outputs = model.train_step(data)
+        # Ensure counter is updated only if `train_step` succeeds.
+        with ops.control_dependencies(_minimum_control_deps(outputs)):
+          model._train_counter.assign_add(1)  # pylint: disable=protected-access
         return outputs
 
       data = next(iterator)
-      outputs = self.distribute_strategy.run(run_step, args=(data,))
+      outputs = model.distribute_strategy.run(run_step, args=(data,))
       outputs = reduce_per_replica(
           outputs, self.distribute_strategy, reduction='first')
-      write_scalar_summaries(outputs, step=self._train_counter)
+      write_scalar_summaries(outputs, step=model._train_counter)  # pylint: disable=protected-access
       return outputs
+
+    if self._steps_per_execution.numpy().item() == 1:
+
+      def train_function(iterator):
+        """Runs a training execution with one step."""
+        return step_function(self, iterator)
+
+    else:
+
+      def train_function(iterator):
+        """Runs a training execution with multiple steps."""
+        outputs = step_function(self, iterator)
+        for _ in math_ops.range(self._steps_per_execution - 1):
+          outputs = step_function(self, iterator)
+        return outputs
 
     if not self.run_eagerly:
       train_function = def_function.function(
@@ -618,7 +656,10 @@ class Model(network.Network, version_utils.ModelVersionSelector):
            `keras.utils.Sequence` instance.
         validation_data: Data on which to evaluate
             the loss and any model metrics at the end of each epoch.
-            The model will not be trained on this data.
+            The model will not be trained on this data. Thus, note the fact
+            that the validation loss of data provided using `validation_split`
+            or `validation_data` is not affected by regularization layers like
+            noise and dropuout.
             `validation_data` will override `validation_split`.
             `validation_data` could be:
               - tuple `(x_val, y_val)` of Numpy arrays or tensors
@@ -773,7 +814,8 @@ class Model(network.Network, version_utils.ModelVersionSelector):
           max_queue_size=max_queue_size,
           workers=workers,
           use_multiprocessing=use_multiprocessing,
-          model=self)
+          model=self,
+          steps_per_execution=self._steps_per_execution)
 
       # Container that configures and calls `tf.keras.Callback`s.
       if not isinstance(callbacks, callbacks_module.CallbackList):
@@ -808,13 +850,11 @@ class Model(network.Network, version_utils.ModelVersionSelector):
                 batch_size=batch_size):
               callbacks.on_train_batch_begin(step)
               tmp_logs = train_function(iterator)
-              # Catch OutOfRangeError for Datasets of unknown size.
-              # This blocks until the batch has finished executing.
-              # TODO(b/150292341): Allow multiple async steps here.
-              if not data_handler.inferred_steps:
+              if data_handler.should_sync:
                 context.async_wait()
               logs = tmp_logs  # No error, now safe to assign to logs.
-              callbacks.on_train_batch_end(step, logs)
+              end_step = step + data_handler.step_increment
+              callbacks.on_train_batch_end(end_step, logs)
         epoch_logs = copy.copy(logs)
 
         # Run validation.
@@ -898,19 +938,36 @@ class Model(network.Network, version_utils.ModelVersionSelector):
     if self.test_function is not None:
       return self.test_function
 
-    def test_function(iterator):
-      """Runs one call to `self.test_function`."""
+    def step_function(model, iterator):
+      """Runs a single evaluation step."""
 
       def run_step(data):
-        outputs = self.test_step(data)
-        self._test_counter.assign_add(1)
+        outputs = model.test_step(data)
+        # Ensure counter is updated only if `test_step` succeeds.
+        with ops.control_dependencies(_minimum_control_deps(outputs)):
+          model._test_counter.assign_add(1)  # pylint: disable=protected-access
         return outputs
 
       data = next(iterator)
-      outputs = self.distribute_strategy.run(run_step, args=(data,))
+      outputs = model.distribute_strategy.run(run_step, args=(data,))
       outputs = reduce_per_replica(
           outputs, self.distribute_strategy, reduction='first')
       return outputs
+
+    if self._steps_per_execution.numpy().item() == 1:
+
+      def test_function(iterator):
+        """Runs an evaluation execution with one step."""
+        return step_function(self, iterator)
+
+    else:
+
+      def test_function(iterator):
+        """Runs an evaluation execution with multiple steps."""
+        outputs = step_function(self, iterator)
+        for _ in math_ops.range(self._steps_per_execution - 1):
+          outputs = step_function(self, iterator)
+        return outputs
 
     if not self.run_eagerly:
       test_function = def_function.function(
@@ -1022,7 +1079,8 @@ class Model(network.Network, version_utils.ModelVersionSelector):
           max_queue_size=max_queue_size,
           workers=workers,
           use_multiprocessing=use_multiprocessing,
-          model=self)
+          model=self,
+          steps_per_execution=self._steps_per_execution)
 
       # Container that configures and calls `tf.keras.Callback`s.
       if not isinstance(callbacks, callbacks_module.CallbackList):
@@ -1045,13 +1103,11 @@ class Model(network.Network, version_utils.ModelVersionSelector):
             with trace.Trace('TraceContext', graph_type='test', step_num=step):
               callbacks.on_test_batch_begin(step)
               tmp_logs = test_function(iterator)
-              # Catch OutOfRangeError for Datasets of unknown size.
-              # This blocks until the batch has finished executing.
-              # TODO(b/150292341): Allow multiple async steps here.
-              if not data_handler.inferred_steps:
+              if data_handler.should_sync:
                 context.async_wait()
               logs = tmp_logs  # No error, now safe to assign to logs.
-              callbacks.on_test_batch_end(step, logs)
+              end_step = step + data_handler.step_increment
+              callbacks.on_test_batch_end(end_step, logs)
       callbacks.on_test_end()
 
       logs = tf_utils.to_numpy_or_python_type(logs)
@@ -1113,7 +1169,9 @@ class Model(network.Network, version_utils.ModelVersionSelector):
 
       def run_step(data):
         outputs = self.predict_step(data)
-        self._predict_counter.assign_add(1)
+        # Ensure counter is updated only if `predict_step` succeeds.
+        with ops.control_dependencies(_minimum_control_deps(outputs)):
+          self._predict_counter.assign_add(1)
         return outputs
 
       data = next(iterator)
@@ -1146,7 +1204,8 @@ class Model(network.Network, version_utils.ModelVersionSelector):
     directly using `__call__` is recommended for faster execution, e.g.,
     `model(x)`, or `model(x, training=False)` if you have layers such as
     `tf.keras.layers.BatchNormalization` that behaves differently during
-    inference.
+    inference. Also, note the fact that test loss is not affected by
+    regularization layers like noise and dropout.
 
     Arguments:
         x: Input samples. It could be:
@@ -1239,10 +1298,7 @@ class Model(network.Network, version_utils.ModelVersionSelector):
           for step in data_handler.steps():
             callbacks.on_predict_batch_begin(step)
             tmp_batch_outputs = predict_function(iterator)
-            # Catch OutOfRangeError for Datasets of unknown size.
-            # This blocks until the batch has finished executing.
-            # TODO(b/150292341): Allow multiple async steps here.
-            if not data_handler.inferred_steps:
+            if data_handler.should_sync:
               context.async_wait()
             batch_outputs = tmp_batch_outputs  # No error, now safe to assign.
             if outputs is None:
@@ -1544,7 +1600,7 @@ class Model(network.Network, version_utils.ModelVersionSelector):
     if kwargs.pop('target_tensors', None) is not None:
       raise ValueError(
           'target_tensors argument is not supported when executing eagerly.')
-    invalid_kwargs = set(kwargs) - {'run_eagerly'}
+    invalid_kwargs = set(kwargs) - {'experimental_steps_per_execution'}
     if invalid_kwargs:
       raise TypeError('Invalid keyword argument(s) in `compile`: %s' %
                       (invalid_kwargs,))
@@ -1733,7 +1789,7 @@ def _tpu_multi_host_concat(v, strategy):
   return concat(ordered_replicas)
 
 
-def _minimize(tape, optimizer, loss, trainable_variables):
+def _minimize(strategy, tape, optimizer, loss, trainable_variables):
   """Minimizes loss for one step by updating `trainable_variables`.
 
   This is roughly equivalent to
@@ -1747,6 +1803,7 @@ def _minimize(tape, optimizer, loss, trainable_variables):
   optimizer is a LossScaleOptimizer.
 
   Args:
+    strategy: `tf.distribute.Strategy`.
     tape: A gradient tape. The loss must have been computed under this tape.
     optimizer: The optimizer used to minimize the loss.
     loss: The loss tensor.
@@ -1760,7 +1817,15 @@ def _minimize(tape, optimizer, loss, trainable_variables):
 
   gradients = tape.gradient(loss, trainable_variables)
 
-  if optimizer._HAS_ALL_REDUCE_SUM_GRAD:  # pylint: disable=protected-access
+  # Whether to aggregate gradients outside of optimizer. This requires support
+  # of the optimizer and doesn't work with ParameterServerStrategy and
+  # CentralStroageStrategy.
+  aggregate_grads_outside_optimizer = (
+      optimizer._HAS_AGGREGATE_GRAD and  # pylint: disable=protected-access
+      not isinstance(strategy.extended,
+                     parameter_server_strategy.ParameterServerStrategyExtended))
+
+  if aggregate_grads_outside_optimizer:
     # We aggregate gradients before unscaling them, in case a subclass of
     # LossScaleOptimizer all-reduces in fp16. All-reducing in fp16 can only be
     # done on scaled gradients, not unscaled gradients, for numeric stability.
@@ -1770,9 +1835,10 @@ def _minimize(tape, optimizer, loss, trainable_variables):
     gradients = optimizer.get_unscaled_gradients(gradients)
   gradients = optimizer._clip_gradients(gradients)  # pylint: disable=protected-access
   if trainable_variables:
-    if optimizer._HAS_ALL_REDUCE_SUM_GRAD:  # pylint: disable=protected-access
-      optimizer.apply_gradients(zip(gradients, trainable_variables),
-                                all_reduce_sum_gradients=False)
+    if aggregate_grads_outside_optimizer:
+      optimizer.apply_gradients(
+          zip(gradients, trainable_variables),
+          experimental_aggregate_gradients=False)
     else:
       optimizer.apply_gradients(zip(gradients, trainable_variables))
 
@@ -1785,3 +1851,15 @@ def write_scalar_summaries(logs, step):
   for name, value in logs.items():
     if _is_scalar(value):
       summary_ops_v2.scalar('batch_' + name, value, step=step)
+
+
+def _minimum_control_deps(outputs):
+  """Returns the minimum control dependencies to ensure step succeeded."""
+  if context.executing_eagerly():
+    return []  # Control dependencies not needed.
+  outputs = nest.flatten(outputs, expand_composites=True)
+  for out in outputs:
+    # Variables can't be control dependencies.
+    if not isinstance(out, variables.Variable):
+      return [out]  # Return first Tensor or Op from outputs.
+  return []  # No viable Tensor or Op to use for control deps.

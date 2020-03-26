@@ -105,8 +105,7 @@ OpKernel::OpKernel(OpKernelConstruction* context, bool is_deferred)
       name_view_(props_->node_def.name()),
       type_string_view_(props_->node_def.op()),
       graph_def_version_(context->graph_def_version()),
-      is_deferred_(is_deferred),
-      cost_estimate_(OpKernel::kInitialCostEstimateCycles) {
+      is_deferred_(is_deferred) {
   OP_REQUIRES_OK(context,
                  NameRangesForNode(props_->node_def, *props_->op_def,
                                    &input_name_map_, &output_name_map_));
@@ -133,8 +132,7 @@ OpKernel::OpKernel(OpKernelConstruction* context, NodeDef&& custom_def,
       name_view_(props_->node_def.name()),
       type_string_view_(props_->node_def.op()),
       graph_def_version_(context->graph_def_version()),
-      is_deferred_(is_deferred),
-      cost_estimate_(OpKernel::kInitialCostEstimateCycles) {
+      is_deferred_(is_deferred) {
   OP_REQUIRES_OK(context,
                  NameRangesForNode(props_->node_def, *props_->op_def,
                                    &input_name_map_, &output_name_map_));
@@ -148,11 +146,6 @@ OpKernel::OpKernel(OpKernelConstruction* context, NodeDef&& custom_def,
 }
 
 OpKernel::~OpKernel() {}
-
-const uint64 OpKernel::kInitialCostEstimateCycles;
-const uint64 OpKernel::kOpIsExpensiveThresholdCycles;
-const uint64 OpKernel::kCostDecay;
-
 
 Status OpKernel::InputRange(StringPiece input_name, int* start,
                             int* stop) const {
@@ -751,8 +744,8 @@ Status OpKernelContext::allocate_tensor(
     DataType type, const TensorShape& shape, Tensor* out_tensor,
     AllocatorAttributes attr, const AllocationAttributes& allocation_attr) {
   Allocator* a = get_allocator(attr);
-  MEMDEBUG_CACHE_OP(op_kernel().name().c_str());
-  MEMDEBUG_CACHE_STEPID(step_id());
+  auto op_annotation =
+      ScopedMemoryDebugAnnotation(op_kernel().name_view().data(), step_id());
   Tensor new_tensor(a, type, shape,
                     AllocationAttributes(allocation_attr.no_retry_on_failure,
                                          /* allocation_will_be_logged= */ true,

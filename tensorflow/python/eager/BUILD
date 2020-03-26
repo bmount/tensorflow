@@ -178,10 +178,7 @@ py_library(
     name = "monitoring",
     srcs = ["monitoring.py"],
     srcs_version = "PY2AND3",
-    visibility = [
-        "//tensorflow:internal",
-        "//third_party/py/tf_agents:__subpackages__",
-    ],
+    visibility = ["//visibility:public"],
     deps = [
         "//tensorflow/python:c_api_util",
         "//tensorflow/python:pywrap_tf_session",
@@ -843,6 +840,7 @@ py_library(
         ":context",
         "//tensorflow/core:protos_all_py",
         "//tensorflow/python:platform",
+        "//tensorflow/python/distribute/cluster_resolver:base_cluster_resolver_py",
     ],
 )
 
@@ -893,9 +891,10 @@ cuda_py_test(
     srcs = ["remote_cluster_test.py"],
     grpc_enabled = True,
     python_version = "PY3",
-    shard_count = 16,
+    shard_count = 8,
     tags = [
         "no_oss",  # This test launches local server
+        "notsan",  # TODO(b/152075365)
     ],
     deps = [
         "//tensorflow/python:array_ops",

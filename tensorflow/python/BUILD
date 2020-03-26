@@ -3,6 +3,7 @@
 # Public targets:
 #  ":platform" - Low-level and platform-specific Python code.
 
+load("//tensorflow:tensorflow.bzl", "py_strict_library")
 load("//tensorflow:tensorflow.bzl", "cc_header_only_library", "if_mlir", "if_not_windows", "if_xla_available", "py_test", "py_tests", "tf_cc_shared_object", "tf_cuda_library", "tf_gen_op_wrapper_py", "tf_py_build_info_genrule", "tf_py_test")
 load("//tensorflow:tensorflow.bzl", "tf_python_pybind_extension")
 load("//tensorflow:tensorflow.bzl", "pybind_extension")
@@ -18,6 +19,8 @@ load(
     "//third_party/ngraph:build_defs.bzl",
     "if_ngraph",
 )
+
+# TODO(mdan): Break into per-directory files.
 
 visibility = [
     "//engedu/ml/tf_from_scratch:__pkg__",
@@ -636,6 +639,7 @@ tf_python_pybind_extension(
             "//tensorflow/core:eager_service_proto_cc",
             "//tensorflow/core:master_proto_cc",
             "//tensorflow/core:worker_proto_cc",
+            "//tensorflow/core:version_lib",
         ],
         otherwise = [
             "//tensorflow/core:eager_service_proto_cc_headers_only",
@@ -1057,17 +1061,6 @@ tf_py_test(
 tf_py_test(
     name = "decorator_utils_test",
     srcs = ["util/decorator_utils_test.py"],
-    python_version = "PY3",
-    deps = [
-        ":client_testlib",
-        ":platform",
-        ":util",
-    ],
-)
-
-tf_py_test(
-    name = "tf_export_test",
-    srcs = ["util/tf_export_test.py"],
     python_version = "PY3",
     deps = [
         ":client_testlib",
@@ -1823,19 +1816,6 @@ tf_py_test(
     ],
 )
 
-# This target is maintained separately from :util to provide separate visibility
-# for legacy users who were granted visibility when the functions were private
-# members of ops.Graph.
-py_library(
-    name = "tf_stack",
-    srcs = ["util/tf_stack.py"],
-    srcs_version = "PY2AND3",
-    visibility = ["//visibility:public"],
-    deps = [
-        ":_tf_stack",
-    ],
-)
-
 py_library(
     name = "tensor_shape",
     srcs = ["framework/tensor_shape.py"],
@@ -1884,6 +1864,7 @@ py_library(
         ":tensor_shape",
         ":util",
         "//tensorflow/core:protos_all_py",
+        "//tensorflow/python/types",
     ],
 )
 
@@ -2992,6 +2973,7 @@ tf_gen_op_wrapper_private_py(
     deps = [
         "//tensorflow/core:tpu_configuration_ops_op_lib",
         "//tensorflow/core:tpu_cross_replica_ops_op_lib",
+        "//tensorflow/core:tpu_embedding_load_retrieve_ops_op_lib",
         "//tensorflow/core:tpu_embedding_ops_op_lib",
         "//tensorflow/core:tpu_functional_ops_op_lib",
         "//tensorflow/core:tpu_heartbeat_ops_op_lib",
@@ -3197,6 +3179,7 @@ tf_py_test(
     size = "small",
     srcs = ["ops/collective_ops_test.py"],
     python_version = "PY3",
+    tags = ["no_rocm"],
     deps = [
         ":client_testlib",
         ":collective_ops",
@@ -4063,7 +4046,6 @@ py_library(
         ":nn_ops",
         ":nn_ops_gen",
         ":platform_device_context",
-        ":rnn",
         ":sparse_ops",
         ":util",
         ":variables",
@@ -4265,6 +4247,8 @@ py_library(
         ":util",
         ":variable_scope",
         ":variables",
+        "//tensorflow/python/keras/layers/legacy_rnn:rnn_cell_impl",
+        "//tensorflow/python/keras/layers/legacy_rnn:rnn_cell_wrapper_impl",
     ],
 )
 
@@ -5397,6 +5381,63 @@ py_library(
     ],
 )
 
+# Leaf library: may not depend on anything else inside TensorFlow.
+py_strict_library(
+    name = "tf_export",
+    srcs = ["util/tf_export.py"],
+    srcs_version = "PY2AND3",
+    visibility = ["//tensorflow:__subpackages__"],
+    deps = [
+        ":tf_decorator",
+    ],
+)
+
+tf_py_test(
+    name = "tf_export_test",
+    srcs = ["util/tf_export_test.py"],
+    python_version = "PY3",
+    deps = [
+        ":client_testlib",
+        ":platform",
+        ":util",
+    ],
+)
+
+# Leaf library: may not depend on anything else inside TensorFlow.
+# TODO(mdan): Move this utility outside of TF.
+py_strict_library(
+    name = "tf_decorator",
+    srcs = [
+        "util/tf_contextlib.py",
+        "util/tf_decorator.py",
+        "util/tf_inspect.py",
+    ],
+    srcs_version = "PY2AND3",
+    visibility = [
+        "//tensorflow:__subpackages__",
+        # TODO(mdan): Remove these dependencies.
+        "//third_party/py/tf_slim:__subpackages__",
+        "//learning/deepmind/research/language/translation/lm:__subpackages__",
+    ],
+    deps = [
+        ":tf_stack",
+        "@six_archive//:six",
+    ],
+)
+
+# Leaf library: may not depend on anything else inside TensorFlow.
+py_strict_library(
+    name = "tf_stack",
+    srcs = ["util/tf_stack.py"],
+    srcs_version = "PY2AND3",
+    # TODO(mdan): Remove public visibility.
+    visibility = ["//visibility:public"],
+    deps = [
+        ":_tf_stack",
+        "@six_archive//:six",
+    ],
+)
+
 pybind_extension(
     name = "_tf_stack",
     srcs = ["util/tf_stack.cc"],
@@ -5408,13 +5449,28 @@ pybind_extension(
     ],
 )
 
+tf_py_test(
+    name = "tf_stack_test",
+    srcs = ["util/tf_stack_test.py"],
+    python_version = "PY3",
+    deps = [
+        ":client_testlib",
+        ":tf_export",
+        ":tf_stack",
+    ],
+)
+
 py_library(
     name = "util",
     srcs = glob(
         ["util/**/*.py"],
         exclude = [
             "util/example_parser*",
+            "util/tf_contextlib.py",
             "util/tf_should_use.py",
+            "util/tf_export.py",
+            "util/tf_stack.py",
+            "util/tf_decorator.py",
             "util/**/*_test.py",
         ],
     ),
@@ -5425,7 +5481,9 @@ py_library(
         "//third_party/py/tf_agents:__subpackages__",
     ],
     deps = [
-        ":_tf_stack",
+        ":tf_decorator",
+        ":tf_export",
+        ":tf_stack",
         "@org_python_pypi_backports_weakref",
         "@com_google_protobuf//:protobuf_python",
         "//third_party/py/numpy",
@@ -5433,16 +5491,6 @@ py_library(
         "@wrapt",
         "//tensorflow/tools/compatibility:all_renames_v2",
     ] + if_mlir(["//tensorflow/compiler/mlir/tensorflow:mlir_roundtrip_pass_registration"]),
-)
-
-tf_py_test(
-    name = "tf_stack_test",
-    srcs = ["util/tf_stack_test.py"],
-    python_version = "PY3",
-    deps = [
-        ":client_testlib",
-        ":util",
-    ],
 )
 
 tf_py_test(
@@ -5814,6 +5862,7 @@ tf_py_wrap_cc(
         "//tensorflow/core/distributed_runtime:server_lib",
         "//tensorflow/core/platform:stacktrace_handler",
         "//tensorflow/core/profiler/internal:print_model_analysis",
+        "//tensorflow/core/profiler/internal/cpu:python_tracer",
         "//tensorflow/tools/graph_transforms:transform_graph_lib",
         "//tensorflow/lite/toco/python:toco_python_api",
         "//tensorflow/python/eager:pywrap_tfe_lib",
@@ -6362,6 +6411,9 @@ cuda_py_test(
     size = "small",
     srcs = ["client/timeline_test.py"],
     python_version = "PY3",
+    tags = [
+        "gpu_cupti",
+    ],
     xla_enable_strict_auto_jit = False,  # Graph structure is different with autojit
     deps = [
         ":client",
@@ -6425,6 +6477,7 @@ tf_py_test(
     size = "small",
     srcs = ["framework/convert_to_constants_test.py"],
     python_version = "PY3",
+    tags = ["no_rocm"],
     deps = [
         "client_testlib",
         "framework_test_lib",
@@ -6449,7 +6502,10 @@ tf_py_test(
     size = "small",
     srcs = ["lib/io/file_io_test.py"],
     python_version = "PY3",
-    tags = ["no_windows"],
+    tags = [
+        "no_rocm",
+        "no_windows",
+    ],
     deps = [
         ":client_testlib",
         ":errors",
@@ -7043,7 +7099,6 @@ py_library(
     deps = [
         ":control_flow_ops",
         ":smart_cond",
-        ":util",
         ":variables",
     ],
 )
@@ -7060,7 +7115,6 @@ py_library(
     srcs_version = "PY2AND3",
     deps = [
         ":layers_base",
-        "//tensorflow/python/keras/engine:input_spec",
         "//tensorflow/python/keras/legacy_tf_layers:convolutional",
         "//tensorflow/python/keras/legacy_tf_layers:core",
         "//tensorflow/python/keras/legacy_tf_layers:normalization",
@@ -7723,8 +7777,9 @@ tf_py_test(
     tags = [
         "grappler",
         "no_cuda_on_cpu_tap",
+        "no_mac",
         "no_pip",
-        "nomac",
+        "no_windows",  # TODO(b/151942037)
     ],
     deps = [
         ":array_ops",

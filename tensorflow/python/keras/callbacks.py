@@ -257,12 +257,6 @@ class CallbackList(object):
     self._delta_ts = collections.defaultdict(
         lambda: collections.deque([], maxlen=self._queue_length))
 
-  def _process_logs(self, logs):
-    """Turns tensors into numpy arrays or Python scalars."""
-    if logs:
-      return tf_utils.to_numpy_or_python_type(logs)
-    return {}
-
   def append(self, callback):
     self.callbacks.append(callback)
 
@@ -291,9 +285,15 @@ class CallbackList(object):
 
     logs = logs or {}
     t_before_callbacks = time.time()
+    numpy_logs = None
     for callback in self.callbacks:
       batch_hook = getattr(callback, hook_name)
-      batch_hook(batch, logs)
+      if getattr(callback, '_supports_tf_logs', False):
+        batch_hook(batch, logs)
+      else:
+        if numpy_logs is None:  # Only convert once.
+          numpy_logs = tf_utils.to_numpy_or_python_type(logs)
+        batch_hook(batch, numpy_logs)
     self._delta_ts[hook_name].append(time.time() - t_before_callbacks)
 
     delta_t_median = np.median(self._delta_ts[hook_name])
@@ -324,12 +324,10 @@ class CallbackList(object):
 
   def on_batch_begin(self, batch, logs=None):
     if self._should_call_train_batch_hooks:
-      logs = self._process_logs(logs)
       self._call_batch_hook(ModeKeys.TRAIN, 'begin', batch, logs=logs)
 
   def on_batch_end(self, batch, logs=None):
     if self._should_call_train_batch_hooks:
-      logs = self._process_logs(logs)
       self._call_batch_hook(ModeKeys.TRAIN, 'end', batch, logs=logs)
 
   def on_epoch_begin(self, epoch, logs=None):
@@ -342,9 +340,15 @@ class CallbackList(object):
         logs: dict. Currently no data is passed to this argument for this method
           but that may change in the future.
     """
-    logs = self._process_logs(logs)
+    logs = logs or {}
+    numpy_logs = None
     for callback in self.callbacks:
-      callback.on_epoch_begin(epoch, logs)
+      if getattr(callback, '_supports_tf_logs', False):
+        callback.on_epoch_begin(epoch, logs)
+      else:
+        if numpy_logs is None:  # Only convert once.
+          numpy_logs = tf_utils.to_numpy_or_python_type(logs)
+        callback.on_epoch_begin(epoch, numpy_logs)
     self._reset_batch_timing()
 
   def on_epoch_end(self, epoch, logs=None):
@@ -358,9 +362,15 @@ class CallbackList(object):
           validation epoch if validation is performed. Validation result keys
           are prefixed with `val_`.
     """
-    logs = self._process_logs(logs)
+    logs = logs or {}
+    numpy_logs = None
     for callback in self.callbacks:
-      callback.on_epoch_end(epoch, logs)
+      if getattr(callback, '_supports_tf_logs', False):
+        callback.on_epoch_end(epoch, logs)
+      else:
+        if numpy_logs is None:  # Only convert once.
+          numpy_logs = tf_utils.to_numpy_or_python_type(logs)
+        callback.on_epoch_end(epoch, numpy_logs)
 
   def on_train_batch_begin(self, batch, logs=None):
     """Calls the `on_train_batch_begin` methods of its callbacks.
@@ -373,7 +383,6 @@ class CallbackList(object):
     # TODO(b/150629188): Make ProgBarLogger callback not use batch hooks
     # when verbose != 1
     if self._should_call_train_batch_hooks:
-      logs = self._process_logs(logs)
       self._call_batch_hook(ModeKeys.TRAIN, 'begin', batch, logs=logs)
 
   def on_train_batch_end(self, batch, logs=None):
@@ -384,7 +393,6 @@ class CallbackList(object):
         logs: dict. Metric results for this batch.
     """
     if self._should_call_train_batch_hooks:
-      logs = self._process_logs(logs)
       self._call_batch_hook(ModeKeys.TRAIN, 'end', batch, logs=logs)
 
   def on_test_batch_begin(self, batch, logs=None):
@@ -396,7 +404,6 @@ class CallbackList(object):
           number and the size of the batch.
     """
     if self._should_call_test_batch_hooks:
-      logs = self._process_logs(logs)
       self._call_batch_hook(ModeKeys.TEST, 'begin', batch, logs=logs)
 
   def on_test_batch_end(self, batch, logs=None):
@@ -407,7 +414,6 @@ class CallbackList(object):
         logs: dict. Metric results for this batch.
     """
     if self._should_call_test_batch_hooks:
-      logs = self._process_logs(logs)
       self._call_batch_hook(ModeKeys.TEST, 'end', batch, logs=logs)
 
   def on_predict_batch_begin(self, batch, logs=None):
@@ -419,7 +425,6 @@ class CallbackList(object):
           number and the size of the batch.
     """
     if self._should_call_predict_batch_hooks:
-      logs = self._process_logs(logs)
       self._call_batch_hook(ModeKeys.PREDICT, 'begin', batch, logs=logs)
 
   def on_predict_batch_end(self, batch, logs=None):
@@ -430,7 +435,6 @@ class CallbackList(object):
         logs: dict. Metric results for this batch.
     """
     if self._should_call_predict_batch_hooks:
-      logs = self._process_logs(logs)
       self._call_batch_hook(ModeKeys.PREDICT, 'end', batch, logs=logs)
 
   def on_train_begin(self, logs=None):
@@ -440,9 +444,15 @@ class CallbackList(object):
         logs: dict. Currently no data is passed to this argument for this method
           but that may change in the future.
     """
-    logs = self._process_logs(logs)
+    logs = logs or {}
+    numpy_logs = None
     for callback in self.callbacks:
-      callback.on_train_begin(logs)
+      if getattr(callback, '_supports_tf_logs', False):
+        callback.on_train_begin(logs)
+      else:
+        if numpy_logs is None:  # Only convert once.
+          numpy_logs = tf_utils.to_numpy_or_python_type(logs)
+        callback.on_train_begin(numpy_logs)
 
   def on_train_end(self, logs=None):
     """Calls the `on_train_end` methods of its callbacks.
@@ -451,9 +461,15 @@ class CallbackList(object):
         logs: dict. Currently no data is passed to this argument for this method
           but that may change in the future.
     """
-    logs = self._process_logs(logs)
+    logs = logs or {}
+    numpy_logs = None
     for callback in self.callbacks:
-      callback.on_train_end(logs)
+      if getattr(callback, '_supports_tf_logs', False):
+        callback.on_train_end(logs)
+      else:
+        if numpy_logs is None:  # Only convert once.
+          numpy_logs = tf_utils.to_numpy_or_python_type(logs)
+        callback.on_train_end(numpy_logs)
 
   def on_test_begin(self, logs=None):
     """Calls the `on_test_begin` methods of its callbacks.
@@ -462,9 +478,15 @@ class CallbackList(object):
         logs: dict. Currently no data is passed to this argument for this method
           but that may change in the future.
     """
-    logs = self._process_logs(logs)
+    logs = logs or {}
+    numpy_logs = None
     for callback in self.callbacks:
-      callback.on_test_begin(logs)
+      if getattr(callback, '_supports_tf_logs', False):
+        callback.on_test_begin(logs)
+      else:
+        if numpy_logs is None:  # Only convert once.
+          numpy_logs = tf_utils.to_numpy_or_python_type(logs)
+        callback.on_test_begin(numpy_logs)
 
   def on_test_end(self, logs=None):
     """Calls the `on_test_end` methods of its callbacks.
@@ -473,9 +495,15 @@ class CallbackList(object):
         logs: dict. Currently no data is passed to this argument for this method
           but that may change in the future.
     """
-    logs = self._process_logs(logs)
+    logs = logs or {}
+    numpy_logs = None
     for callback in self.callbacks:
-      callback.on_test_end(logs)
+      if getattr(callback, '_supports_tf_logs', False):
+        callback.on_test_end(logs)
+      else:
+        if numpy_logs is None:  # Only convert once.
+          numpy_logs = tf_utils.to_numpy_or_python_type(logs)
+        callback.on_test_end(numpy_logs)
 
   def on_predict_begin(self, logs=None):
     """Calls the 'on_predict_begin` methods of its callbacks.
@@ -484,9 +512,15 @@ class CallbackList(object):
         logs: dict. Currently no data is passed to this argument for this method
           but that may change in the future.
     """
-    logs = self._process_logs(logs)
+    logs = logs or {}
+    numpy_logs = None
     for callback in self.callbacks:
-      callback.on_predict_begin(logs)
+      if getattr(callback, '_supports_tf_logs', False):
+        callback.on_predict_begin(logs)
+      else:
+        if numpy_logs is None:  # Only convert once.
+          numpy_logs = tf_utils.to_numpy_or_python_type(logs)
+        callback.on_predict_begin(numpy_logs)
 
   def on_predict_end(self, logs=None):
     """Calls the `on_predict_end` methods of its callbacks.
@@ -495,9 +529,15 @@ class CallbackList(object):
         logs: dict. Currently no data is passed to this argument for this method
           but that may change in the future.
     """
-    logs = self._process_logs(logs)
+    logs = logs or {}
+    numpy_logs = None
     for callback in self.callbacks:
-      callback.on_predict_end(logs)
+      if getattr(callback, '_supports_tf_logs', False):
+        callback.on_predict_end(logs)
+      else:
+        if numpy_logs is None:  # Only convert once.
+          numpy_logs = tf_utils.to_numpy_or_python_type(logs)
+        callback.on_predict_end(numpy_logs)
 
   def __iter__(self):
     return iter(self.callbacks)
@@ -539,6 +579,7 @@ class Callback(object):
     # Multi-Worker setting.
     # TODO(omalleyt): Make this attr public once solution is stable.
     self._chief_worker_only = None
+    self._supports_tf_logs = False
 
   def set_params(self, params):
     self.params = params
@@ -879,14 +920,15 @@ class ProgbarLogger(Callback):
       print('Epoch %d/%d' % (epoch + 1, self.epochs))
 
   def on_train_batch_end(self, batch, logs=None):
-    self._batch_update_progbar(logs)
+    self._batch_update_progbar(batch, logs)
 
   def on_test_batch_end(self, batch, logs=None):
     if not self._called_in_fit:
-      self._batch_update_progbar(logs)
+      self._batch_update_progbar(batch, logs)
 
   def on_predict_batch_end(self, batch, logs=None):
-    self._batch_update_progbar(None)  # Don't pass prediction results.
+    # Don't pass prediction results.
+    self._batch_update_progbar(batch, None)
 
   def on_epoch_end(self, epoch, logs=None):
     self._finalize_progbar(logs)
@@ -902,7 +944,7 @@ class ProgbarLogger(Callback):
     self.seen = 0
     self.progbar = None
 
-  def _batch_update_progbar(self, logs=None):
+  def _batch_update_progbar(self, batch, logs=None):
     """Updates the progbar."""
     if self.stateful_metrics is None:
       if self.model:
@@ -921,8 +963,11 @@ class ProgbarLogger(Callback):
     batch_size = logs.pop('size', 0)
     num_steps = logs.pop('num_steps', 1)  # DistStrat can run >1 steps.
     logs.pop('batch', None)
-    add_seen = num_steps if self.use_steps else num_steps * batch_size
-    self.seen += add_seen
+    if self.use_steps:
+      self.seen = batch + 1  # One-indexed.
+    else:
+      add_seen = num_steps * batch_size
+      self.seen += add_seen
     self.progbar.update(self.seen, list(logs.items()), finalize=False)
 
   def _finalize_progbar(self, logs):
@@ -1024,10 +1069,12 @@ class ModelCheckpoint(Callback):
         (`model.save(filepath)`).
       save_freq: `'epoch'` or integer. When using `'epoch'`, the callback saves
         the model after each epoch. When using integer, the callback saves the
-        model at end of this many batches. Note that if the saving isn't aligned
-        to epochs, the monitored metric may potentially be less reliable (it
+        model at end of this many batches. If the `Model` is compiled with
+        `experimental_steps_per_execution=N`, then the saving criteria will be
+        checked every Nth batch. Note that if the saving isn't aligned to
+        epochs, the monitored metric may potentially be less reliable (it
         could reflect as little as 1 batch, since the metrics get reset every
-        epoch). Defaults to `'epoch'`
+        epoch). Defaults to `'epoch'`.
       **kwargs: Additional arguments for backwards compatibility. Possible key
         is `period`.
   """
@@ -1042,6 +1089,7 @@ class ModelCheckpoint(Callback):
                save_freq='epoch',
                **kwargs):
     super(ModelCheckpoint, self).__init__()
+    self._supports_tf_logs = True
     self.monitor = monitor
     self.verbose = verbose
     self.filepath = filepath
@@ -1050,6 +1098,7 @@ class ModelCheckpoint(Callback):
     self.save_freq = save_freq
     self.epochs_since_last_save = 0
     self._batches_seen_since_last_saving = 0
+    self._last_batch_seen = 0
 
     # Deprecated field `load_weights_on_restart` is for loading the checkpoint
     # file from `filepath` at the start of `model.fit()`
@@ -1152,13 +1201,9 @@ class ModelCheckpoint(Callback):
         del self._training_state
         self.model._training_state = None
 
-  def on_batch_end(self, batch, logs=None):
-    if self._implements_train_batch_hooks():
-      logs = logs or {}
-      self._batches_seen_since_last_saving += 1
-      if self._batches_seen_since_last_saving >= self.save_freq:
-        self._save_model(epoch=self._current_epoch, logs=logs)
-        self._batches_seen_since_last_saving = 0
+  def on_train_batch_end(self, batch, logs=None):
+    if self._should_save_on_batch(batch):
+      self._save_model(epoch=self._current_epoch, logs=logs)
 
   def on_epoch_begin(self, epoch, logs=None):
     self._current_epoch = epoch
@@ -1179,6 +1224,23 @@ class ModelCheckpoint(Callback):
       # TODO(rchao): Call `back_up` at finer period such as N steps.
       self._training_state.back_up(epoch)
 
+  def _should_save_on_batch(self, batch):
+    """Handles batch-level saving logic, supports steps_per_execution."""
+    if self.save_freq == 'epoch':
+      return False
+
+    if batch <= self._last_batch_seen:  # New epoch.
+      add_batches = batch + 1  # batches are zero-indexed.
+    else:
+      add_batches = batch - self._last_batch_seen
+    self._batches_seen_since_last_saving += add_batches
+    self._last_batch_seen = batch
+
+    if self._batches_seen_since_last_saving >= self.save_freq:
+      self._batches_seen_since_last_saving = 0
+      return True
+    return False
+
   def _save_model(self, epoch, logs):
     """Saves the model.
 
@@ -1190,6 +1252,8 @@ class ModelCheckpoint(Callback):
 
     if isinstance(self.save_freq,
                   int) or self.epochs_since_last_save >= self.period:
+      # Block only when saving interval is reached.
+      logs = tf_utils.to_numpy_or_python_type(logs)
       self.epochs_since_last_save = 0
       filepath = self._get_file_path(epoch, logs)
 
@@ -1354,10 +1418,6 @@ class ModelCheckpoint(Callback):
       # If there are more than one file having latest modified time, return
       # the file path with the largest file name.
       return file_path_with_largest_file_name
-
-  def _implements_train_batch_hooks(self):
-    # If save_freq="epoch", batch-level hooks don't need to be run.
-    return isinstance(self.save_freq, int)
 
 
 @keras_export('keras.callbacks.EarlyStopping')
@@ -1562,28 +1622,42 @@ class RemoteMonitor(Callback):
 class LearningRateScheduler(Callback):
   """Learning rate scheduler.
 
-  Arguments:
+  At the beginning of every epoch, this callback gets the learning rate
+  value from `schedule` function provided at `__init__`, with the current epoch,
+  and applies that learning rate on the optimizer.
+
+  Example:
+
+  >>> # This function keeps the learning rate at 0.001 for the first ten epochs
+  >>> # and decreases it exponentially after that.
+  >>> def scheduler(epoch):
+  ...   if epoch < 10:
+  ...     return 0.001
+  ...   else:
+  ...     return 0.001 * tf.math.exp(0.1 * (10 - epoch))
+  >>>
+  >>> model = tf.keras.models.Sequential([tf.keras.layers.Dense(10)])
+  >>> model.compile(tf.keras.optimizers.SGD(), loss='mse')
+  >>> round(model.optimizer.lr.numpy(), 5)
+  0.01
+
+  >>> callback = tf.keras.callbacks.LearningRateScheduler(scheduler)
+  >>> history = model.fit(np.arange(100).reshape(5, 20), np.zeros(5),
+  ...                     epochs=2, callbacks=[callback], verbose=0)
+  >>> round(model.optimizer.lr.numpy(), 5)
+  0.001
+
+  """
+
+  def __init__(self, schedule, verbose=0):
+    """Initialize a `keras.callbacks.LearningRateScheduler` callback.
+
+    Arguments:
       schedule: a function that takes an epoch index as input
           (integer, indexed from 0) and returns a new
           learning rate as output (float).
       verbose: int. 0: quiet, 1: update messages.
-
-  ```python
-  # This function keeps the learning rate at 0.001 for the first ten epochs
-  # and decreases it exponentially after that.
-  def scheduler(epoch):
-    if epoch < 10:
-      return 0.001
-    else:
-      return 0.001 * tf.math.exp(0.1 * (10 - epoch))
-
-  callback = tf.keras.callbacks.LearningRateScheduler(scheduler)
-  model.fit(data, labels, epochs=100, callbacks=[callback],
-            validation_data=(val_data, val_labels))
-  ```
-  """
-
-  def __init__(self, schedule, verbose=0):
+    """
     super(LearningRateScheduler, self).__init__()
     self.schedule = schedule
     self.verbose = verbose
@@ -1677,7 +1751,7 @@ class TensorBoard(Callback, version_utils.TensorBoardVersionSelector):
         profile_batch must be a non-negative integer or a tuple of integers.
         A pair of positive integers signify a range of batches to profile.
         By default, it will profile the second batch. Set profile_batch=0
-        to disable profiling. Must run in TensorFlow eager mode.
+        to disable profiling.
       embeddings_freq: frequency (in epochs) at which embedding layers will be
         visualized. If set to 0, embeddings won't be visualized.
       embeddings_metadata: a dictionary which maps layer name to a file name in
@@ -1704,6 +1778,7 @@ class TensorBoard(Callback, version_utils.TensorBoardVersionSelector):
                embeddings_metadata=None,
                **kwargs):
     super(TensorBoard, self).__init__()
+    self._supports_tf_logs = True
     self._validate_kwargs(kwargs)
 
     self.log_dir = log_dir
@@ -1715,6 +1790,7 @@ class TensorBoard(Callback, version_utils.TensorBoardVersionSelector):
     self.embeddings_metadata = embeddings_metadata
     self._init_profile_batch(profile_batch)
     self._epoch = 0
+    self._global_train_batch = 0
 
     # Lazily initialized in order to avoid creating event files when
     # not needed.
@@ -1929,6 +2005,7 @@ class TensorBoard(Callback, version_utils.TensorBoardVersionSelector):
     self._should_trace = not (self._start_batch == 0 and self._stop_batch == 0)
 
   def on_train_begin(self, logs=None):
+    self._global_train_batch = 0
     self._push_writer(self._train_writer, self._train_step)
 
   def on_train_end(self, logs=None):
@@ -1947,23 +2024,18 @@ class TensorBoard(Callback, version_utils.TensorBoardVersionSelector):
     self._pop_writer()
 
   def on_train_batch_begin(self, batch, logs=None):
+    self._global_train_batch += 1
     if not self._should_trace:
       return
 
-    if self._epoch == 0 and batch == self._start_batch:
+    if self._global_train_batch == self._start_batch:
       self._start_trace()
 
   def on_train_batch_end(self, batch, logs=None):
-    """Performs profiling if current batch is in profiler_batches.
-
-    Arguments:
-      batch: Integer, index of batch within the current epoch.
-      logs: Dict. Metric results for this batch.
-    """
     if not self._should_trace:
       return
 
-    if self._is_tracing and batch >= self._stop_batch:
+    if self._is_tracing and self._global_train_batch >= self._stop_batch:
       self._stop_trace()
 
   def on_epoch_begin(self, epoch, logs=None):

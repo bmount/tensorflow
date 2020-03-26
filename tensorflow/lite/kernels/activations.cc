@@ -128,7 +128,6 @@ void PopulateLookupTable(struct OpData* data, const TfLiteTensor* input,
 #if __aarch64__ && __clang__
 namespace {
 // Looks up each element of <indices> in <table>, returns them in a vector.
-// idx_offset must be a int8x16_t vector containing 64 in each lane.
 inline uint8x16_t aarch64_lookup_vector(const uint8x16x4_t table[4],
                                         uint8x16_t indices) {
   // Look up in 1st quarter of the table: top 2 bits of indices == 00
@@ -545,8 +544,7 @@ TfLiteStatus SoftmaxPrepare(TfLiteContext* context, TfLiteNode* node) {
   TfLiteTensor* output = GetOutput(context, node, 0);
   TF_LITE_ENSURE_EQ(context, input->type, output->type);
 
-  const int num_dims = NumDimensions(input);
-  TF_LITE_ENSURE(context, num_dims >= 1 && num_dims <= 4);
+  TF_LITE_ENSURE(context, NumDimensions(input) >= 1);
 
   if (input->type == kTfLiteUInt8 || input->type == kTfLiteInt8) {
     data->params.table = data->table;
@@ -809,7 +807,7 @@ TfLiteStatus TanhEval(TfLiteContext* context, TfLiteNode* node) {
         params.input_range_radius = data->input_range_radius;
         params.input_multiplier = data->input_multiplier;
         params.input_left_shift = data->input_left_shift;
-        optimized_ops::Tanh16bitPercision(
+        optimized_ops::Tanh16bitPrecision(
             params, GetTensorShape(input), GetTensorData<uint8_t>(input),
             GetTensorShape(output), GetTensorData<uint8_t>(output));
       } else {
@@ -824,7 +822,7 @@ TfLiteStatus TanhEval(TfLiteContext* context, TfLiteNode* node) {
         params.input_range_radius = data->input_range_radius;
         params.input_multiplier = data->input_multiplier;
         params.input_left_shift = data->input_left_shift;
-        optimized_ops::Tanh16bitPercision(
+        optimized_ops::Tanh16bitPrecision(
             params, GetTensorShape(input), GetTensorData<int8_t>(input),
             GetTensorShape(output), GetTensorData<int8_t>(output));
       } else {
@@ -881,7 +879,7 @@ TfLiteStatus SigmoidEval(TfLiteContext* context, TfLiteNode* node) {
         params.input_range_radius = data->input_range_radius;
         params.input_multiplier = data->input_multiplier;
         params.input_left_shift = data->input_left_shift;
-        optimized_ops::Logistic16bitPercision(
+        optimized_ops::Logistic16bitPrecision(
             params, GetTensorShape(input), GetTensorData<uint8_t>(input),
             GetTensorShape(output), GetTensorData<uint8_t>(output));
       } else {
@@ -896,7 +894,7 @@ TfLiteStatus SigmoidEval(TfLiteContext* context, TfLiteNode* node) {
         params.input_range_radius = data->input_range_radius;
         params.input_multiplier = data->input_multiplier;
         params.input_left_shift = data->input_left_shift;
-        optimized_ops::Logistic16bitPercision(
+        optimized_ops::Logistic16bitPrecision(
             params, GetTensorShape(input), GetTensorData<int8_t>(input),
             GetTensorShape(output), GetTensorData<int8_t>(output));
       } else {
@@ -916,41 +914,22 @@ TfLiteStatus SigmoidEval(TfLiteContext* context, TfLiteNode* node) {
 
 TfLiteStatus SoftmaxFloat(TfLiteContext* context, const TfLiteTensor* input,
                           TfLiteTensor* output, TfLiteSoftmaxParams* params) {
-  switch (NumDimensions(input)) {
-    case 1:
-    case 2:
-    case 3:
-    case 4:
-      SoftmaxParams op_params;
-      op_params.beta = params->beta;
-      optimized_ops::Softmax(
-          op_params, GetTensorShape(input), GetTensorData<float>(input),
-          GetTensorShape(output), GetTensorData<float>(output),
-          CpuBackendContext::GetFromContext(context));
-      return kTfLiteOk;
-    default:
-      TF_LITE_KERNEL_LOG(
-          context,
-          "Only 1D, 2D, 3D and 4D tensors supported currently, got %dD.",
-          NumDimensions(input));
-      return kTfLiteError;
-  }
+  SoftmaxParams op_params;
+  op_params.beta = params->beta;
+  optimized_ops::Softmax(op_params, GetTensorShape(input),
+                         GetTensorData<float>(input), GetTensorShape(output),
+                         GetTensorData<float>(output),
+                         CpuBackendContext::GetFromContext(context));
+  return kTfLiteOk;
 }
 
 template <typename T>
 TfLiteStatus SoftmaxQuantized(TfLiteContext* context, const TfLiteTensor* input,
                               TfLiteTensor* output, SoftmaxOpData* data) {
-  if (NumDimensions(input) >= 1 && NumDimensions(input) <= 4) {
-    optimized_ops::Softmax(data->params, GetTensorShape(input),
-                           GetTensorData<T>(input), GetTensorShape(output),
-                           GetTensorData<T>(output));
-    return kTfLiteOk;
-  } else {
-    TF_LITE_KERNEL_LOG(
-        context, "Only 1D, 2D, 3D and 4D tensors supported currently, got %dD.",
-        NumDimensions(input));
-    return kTfLiteError;
-  }
+  optimized_ops::Softmax(data->params, GetTensorShape(input),
+                         GetTensorData<T>(input), GetTensorShape(output),
+                         GetTensorData<T>(output));
+  return kTfLiteOk;
 }
 
 TfLiteStatus SoftmaxEval(TfLiteContext* context, TfLiteNode* node) {
@@ -960,8 +939,6 @@ TfLiteStatus SoftmaxEval(TfLiteContext* context, TfLiteNode* node) {
   const TfLiteTensor* input = GetInput(context, node, 0);
   TfLiteTensor* output = GetOutput(context, node, 0);
 
-  // TODO(ahentz): consider an implementation that works for many (all?)
-  // dimensions.
   switch (input->type) {
     case kTfLiteFloat32: {
       return SoftmaxFloat(context, input, output, params);

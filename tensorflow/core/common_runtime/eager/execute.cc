@@ -373,7 +373,7 @@ Status MustCompileWithXLA(const EagerOperation* op, const EagerContext& ctx,
 //    running without an explicitly requested device.
 Status EagerLocalExecute(EagerOperation* op, TensorHandle** retvals,
                          int* num_retvals) {
-  MEMDEBUG_CACHE_OP(op->op_name());
+  auto op_annotation = ScopedMemoryDebugAnnotation(op->op_name());
   profiler::TraceMe activity(
       [&] { return absl::StrCat("EagerLocalExecute: ", op->Name()); },
       profiler::TraceMeLevel::kInfo);
@@ -736,7 +736,7 @@ Status EagerRemoteExecute(EagerOperation* op, TensorHandle** retvals,
                                               ctx.GetContextViewId()));
         }
       }
-      auto* input_handle = remote_op->add_inputs();
+      auto* input_handle = remote_op->add_op_inputs()->mutable_remote_handle();
       TF_RETURN_IF_ERROR(ctx.RemoteMgr()->SerializeRemoteTensorHandle(
           input, input_handle, input_device, *input_device_name,
           serialize_resource_dtype_and_shape));

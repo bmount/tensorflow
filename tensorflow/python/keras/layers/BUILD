@@ -5,7 +5,15 @@ load("//tensorflow:tensorflow.bzl", "tf_py_test")
 load("//tensorflow:tensorflow.bzl", "cuda_py_test")
 
 package(
-    default_visibility = ["//visibility:public"],
+    # TODO(scottzhu): Remove non-keras deps from TF.
+    default_visibility = [
+        "//tensorflow/python/distribute:__pkg__",
+        "//tensorflow/python/feature_column:__pkg__",
+        "//tensorflow/python/keras:__subpackages__",
+        "//tensorflow/python/kernel_tests:__pkg__",
+        "//tensorflow/python/training/tracking:__pkg__",
+        "//tensorflow/tools/pip_package:__pkg__",
+    ],
     licenses = ["notice"],  # Apache 2.0
 )
 
@@ -657,7 +665,10 @@ tf_py_test(
     srcs = ["gru_test.py"],
     python_version = "PY3",
     shard_count = 4,
-    tags = ["notsan"],  # http://b/62136390
+    tags = [
+        "no_rocm",
+        "notsan",  # http://b/62136390
+    ],
     deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python/keras",
@@ -674,6 +685,7 @@ tf_py_test(
     python_version = "PY3",
     shard_count = 4,
     tags = [
+        "no_rocm",
         "noasan",  # times out b/63678675
         "notsan",  # http://b/62189182
     ],
