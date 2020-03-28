@@ -278,6 +278,44 @@ int AdrenoInfo::GetWaveSize(bool full_wave) const {
 MaliInfo::MaliInfo(const std::string& device_name)
     : gpu_version(GetMaliGPUVersion(device_name)) {}
 
+bool MaliInfo::IsMaliT6xx() const {
+  return gpu_version == MaliGPU::T604 || gpu_version == MaliGPU::T622 ||
+         gpu_version == MaliGPU::T624 || gpu_version == MaliGPU::T628 ||
+         gpu_version == MaliGPU::T658 || gpu_version == MaliGPU::T678;
+}
+
+bool MaliInfo::IsMaliT7xx() const {
+  return gpu_version == MaliGPU::T720 || gpu_version == MaliGPU::T760;
+}
+
+bool MaliInfo::IsMaliT8xx() const {
+  return gpu_version == MaliGPU::T820 || gpu_version == MaliGPU::T830 ||
+         gpu_version == MaliGPU::T860 || gpu_version == MaliGPU::T880;
+}
+
+bool MaliInfo::IsMidgard() const {
+  return IsMaliT6xx() || IsMaliT7xx() || IsMaliT8xx();
+}
+
+bool MaliInfo::IsBifrostGen1() const {
+  return gpu_version == MaliGPU::G31 || gpu_version == MaliGPU::G51 ||
+         gpu_version == MaliGPU::G71;
+}
+
+bool MaliInfo::IsBifrostGen2() const {
+  return gpu_version == MaliGPU::G52 || gpu_version == MaliGPU::G72;
+}
+
+bool MaliInfo::IsBifrostGen3() const { return gpu_version == MaliGPU::G76; }
+
+bool MaliInfo::IsBifrost() const {
+  return IsBifrostGen1() || IsBifrostGen2() || IsBifrostGen3();
+}
+
+bool MaliInfo::IsValhall() const {
+  return gpu_version == MaliGPU::G57 || gpu_version == MaliGPU::G77;
+}
+
 DeviceInfo::DeviceInfo(cl_device_id id) {
   const auto device_name = GetDeviceInfo<std::string>(id, CL_DEVICE_NAME);
   const auto vendor_name = GetDeviceInfo<std::string>(id, CL_DEVICE_VENDOR);
@@ -478,11 +516,11 @@ void CLDevice::DisableOneLayerTextureArray() {
   info_.adreno_info.support_one_layer_texture_array = false;
 }
 
-Status CreateDefaultGPUDevice(CLDevice* result) {
+absl::Status CreateDefaultGPUDevice(CLDevice* result) {
   cl_uint num_platforms;
   clGetPlatformIDs(0, nullptr, &num_platforms);
   if (num_platforms == 0) {
-    return UnknownError("No supported OpenCL platform.");
+    return absl::UnknownError("No supported OpenCL platform.");
   }
   std::vector<cl_platform_id> platforms(num_platforms);
   clGetPlatformIDs(num_platforms, platforms.data(), nullptr);
@@ -491,7 +529,7 @@ Status CreateDefaultGPUDevice(CLDevice* result) {
   cl_uint num_devices;
   clGetDeviceIDs(platform_id, CL_DEVICE_TYPE_GPU, 0, nullptr, &num_devices);
   if (num_devices == 0) {
-    return UnknownError("No GPU on current platform.");
+    return absl::UnknownError("No GPU on current platform.");
   }
 
   std::vector<cl_device_id> devices(num_devices);
@@ -499,7 +537,7 @@ Status CreateDefaultGPUDevice(CLDevice* result) {
                  nullptr);
 
   *result = CLDevice(devices[0], platform_id);
-  return OkStatus();
+  return absl::OkStatus();
 }
 
 }  // namespace cl

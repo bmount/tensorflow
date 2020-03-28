@@ -1401,8 +1401,7 @@ def categorical_hinge(y_true, y_pred):
   >>> assert np.array_equal(loss.numpy(), np.maximum(0., neg - pos + 1.))
 
   Args:
-    y_true: The ground truth values. `y_true` values are expected to be -1 or 1.
-      If binary (0 or 1) labels are provided they will be converted to -1 or 1.
+    y_true: The ground truth values. `y_true` values are expected to be 0 or 1.
     y_pred: The predicted values.
 
   Returns:
@@ -1843,15 +1842,34 @@ def deserialize(name, custom_objects=None):
 
 @keras_export('keras.losses.get')
 def get(identifier):
-  """Retrieves a Keras loss function.
+  """Retrieves a Keras loss as a `function`/`Loss` class instance.
+
+  The `identifier` may be the string name of a loss function or `Loss` class.
+
+  >>> loss = tf.keras.losses.get("categorical_crossentropy")
+  >>> type(loss)
+  <class 'function'>
+  >>> loss = tf.keras.losses.get("CategoricalCrossentropy")
+  >>> type(loss)
+  <class '...tensorflow.python.keras.losses.CategoricalCrossentropy'>
+
+  You can also specify `config` of the loss to this function by passing dict
+  containing `class_name` and `config` as an identifier. Also note that the
+  `class_name` must map to a `Loss` class
+
+  >>> identifier = {"class_name": "CategoricalCrossentropy",
+  ...               "config": {"from_logits": True}}
+  >>> loss = tf.keras.losses.get(identifier)
+  >>> type(loss)
+  <class '...tensorflow.python.keras.losses.CategoricalCrossentropy'>
 
   Arguments:
     identifier: A loss identifier. One of None or string name of a loss
-      function/class or loss configuration dictionary or a loss function or
-      a loss class instance
+      function/class or loss configuration dictionary or a loss function or a
+      loss class instance
 
   Returns:
-    A Keras loss function/ `Loss` class instance.
+    A Keras loss as a `function`/ `Loss` class instance.
 
   Raises:
     ValueError: If `identifier` cannot be interpreted.

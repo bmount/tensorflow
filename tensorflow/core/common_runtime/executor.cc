@@ -26,6 +26,7 @@ limitations under the License.
 #include "absl/strings/string_view.h"
 #include "tensorflow/core/common_runtime/costmodel_manager.h"
 #include "tensorflow/core/common_runtime/executor_factory.h"
+#include "tensorflow/core/common_runtime/graph_view.h"
 #include "tensorflow/core/common_runtime/metrics.h"
 #include "tensorflow/core/common_runtime/pending_counts.h"
 #include "tensorflow/core/common_runtime/renamed_device.h"
@@ -121,24 +122,9 @@ void SetMemory(NodeExecStatsInterface* stats, OpKernelContext* ctx) {
   stats->SetMemory(ctx);
 }
 
-void SetReferencedTensors(NodeExecStatsInterface* stats,
-                          const TensorReferenceVector& tensors) {
-  if (!stats) return;
-  stats->SetReferencedTensors(tensors);
-}
-
 }  // namespace nodestats
 
 class ExecutorImpl;
-class GraphView;
-
-struct EdgeInfo {
-  int dst_id;
-  int output_slot : 31;
-  // true if this is the last info for output_slot in the EdgeInfo list.
-  bool is_last : 1;
-  int input_slot;
-};
 
 // Time the execution of kernels (in CPU cycles).  Used to dynamically identify
 // inexpensive kernels which can be dispatched inline.
@@ -150,176 +136,8 @@ struct KernelTimer {
   }
 };
 
-// Compact structure representing a graph node and its associated kernel.
-//
-// Each NodeItem is an element of exactly one GraphView.
-struct NodeItem {
-  NodeItem() {}
-
-  // The index of this node's item in its GraphView.
-  int node_id = -1;
-
-  // Cached attributes of this node for fast lookup.
-  bool kernel_is_async : 1;     // True iff kernel->AsAsync() != nullptr
-  bool is_merge : 1;            // True iff IsMerge(node)
-  bool is_enter : 1;            // True iff IsEnter(node)
-  bool is_constant_enter : 1;   // True iff IsEnter(node) and
-                                // node->GetAttr("is_constant") == true.
-  bool is_exit : 1;             // True iff IsExit(node)
-  bool is_control_trigger : 1;  // True iff IsControlTrigger(node)
-  bool is_source : 1;           // True iff IsSource(node)
-  bool is_sink : 1;             // True iff IsSink(node)
-  // True iff IsEnter(node) || IsExit(node) || IsNextIteration(node)
-  bool is_enter_exit_or_next_iter : 1;
-  bool is_transfer_node : 1;      // True iff IsTransferNode(node)
-  bool is_initialization_op : 1;  // True iff IsInitializationOp(node)
-  bool is_recv_or_switch : 1;     // True iff IsRecv(node) || IsSwitch(node)
-  bool is_next_iteration : 1;     // True iff IsNextIteration(node)
-  bool is_noop : 1;  // True iff item->kernel->type_string_view() == "NoOp")
-
-  // The kernel for this node.
-  OpKernel* kernel = nullptr;
-
-  // If the kernel is a Const op, this containts points to the constant tensor.
-  const Tensor* const_tensor = nullptr;
-
-  // Cached values of node->num_inputs() and node->num_outputs(), to
-  // avoid levels of indirection.
-  int num_inputs;
-  int num_outputs;
-
-  // ExecutorImpl::tensors_[input_start] is the 1st positional input
-  // for this node.
-  int input_start = 0;
-
-  PendingCounts::Handle pending_id;
-
-  // Number of output edges.
-  size_t num_output_edges;
-
-  // If non-null, contains an array of num_outputs bools, where the ith bool
-  // is true if and only if the ith output is consumed by another node.
-  std::unique_ptr<bool[]> outputs_required;
-
-  const EdgeInfo* output_edge_list() const { return output_edge_base(); }
-
-  // ith output edge.
-  const EdgeInfo& output_edge(int i) const {
-    DCHECK_GE(i, 0);
-    DCHECK_LT(i, num_output_edges);
-    return output_edge_base()[i];
-  }
-
-  DataType input_type(int i) const {
-    DCHECK_LT(i, num_inputs);
-    return static_cast<DataType>(input_type_base()[i]);
-  }
-  DataType output_type(int i) const {
-    DCHECK_LT(i, num_outputs);
-    return static_cast<DataType>(output_type_base()[i]);
-  }
-
-  // Return array of per-output allocator attributes.
-  const AllocatorAttributes* output_attrs() const { return output_attr_base(); }
-
-  // Return array of expected input index from which each output should
-  // be forwarded:
-  // kNeverForward (-2) for DO NOT FORWARD (must allocate).
-  // kNoReservation (-1) for no expected forwarding.
-  // 0... for forward from that input.
-  const int* forward_from() const { return forward_from_base(); }
-
-  string DebugString() const {
-    string ret = strings::StrCat("{name:'", kernel->name(), "' id:", node_id);
-    if (is_source) {
-      strings::StrAppend(&ret, " source}");
-    } else if (is_sink) {
-      strings::StrAppend(&ret, " sink}");
-    } else {
-      strings::StrAppend(&ret, " def:{", SummarizeNodeDef(kernel->def()), "}}");
-    }
-    return ret;
-  }
-
- private:
-  friend class GraphView;
-
-  // Variable length section starts immediately after *this
-  // (uint8 is enough for DataType).
-  //   EdgeInfo            out_edges[num_out_edges];
-  //   AllocatorAttributes output_attr[num_outputs];
-  //   int                 forward_from[num_outputs];
-  //   uint8               input_type[num_inputs];
-  //   uint8               output_type[num_outputs];
-
-  // Return pointer to variable length section.
-  char* var() const {
-    return const_cast<char*>(reinterpret_cast<const char*>(this) +
-                             sizeof(NodeItem));
-  }
-
-  EdgeInfo* output_edge_base() const {
-    return reinterpret_cast<EdgeInfo*>(var());
-  }
-  AllocatorAttributes* output_attr_base() const {
-    return reinterpret_cast<AllocatorAttributes*>(var() + sizeof(EdgeInfo) *
-                                                              num_output_edges);
-  }
-  int* forward_from_base() const {
-    return reinterpret_cast<int*>(var() + sizeof(EdgeInfo) * num_output_edges +
-                                  sizeof(AllocatorAttributes) * num_outputs);
-  }
-  uint8* input_type_base() const {
-    return reinterpret_cast<uint8*>(
-        var() + sizeof(EdgeInfo) * num_output_edges +
-        sizeof(AllocatorAttributes) * num_outputs + sizeof(int) * num_outputs);
-  }
-  uint8* output_type_base() const {
-    return reinterpret_cast<uint8*>(
-        var() + sizeof(EdgeInfo) * num_output_edges +
-        sizeof(AllocatorAttributes) * num_outputs + sizeof(int) * num_outputs +
-        sizeof(uint8) * num_inputs);
-  }
-
-  TF_DISALLOW_COPY_AND_ASSIGN(NodeItem);
-};
-
 typedef gtl::InlinedVector<TensorValue, 4> TensorValueVec;
 typedef gtl::InlinedVector<AllocatorAttributes, 4> AllocatorAttributeVec;
-
-// Immutable view of a Graph organized for efficient execution.
-class GraphView {
- public:
-  GraphView() : space_(nullptr) {}
-  ~GraphView();
-
-  void Initialize(const Graph* g);
-  Status SetAllocAttrs(const Graph* g, const Device* device);
-  void SetScopedAllocatorAttrs(const std::vector<const Node*>& sa_nodes);
-
-  NodeItem* node(size_t id) const {
-    DCHECK_GE(id, 0);
-    DCHECK_LT(id, num_nodes_);
-    uint32 offset = node_offsets_[id];
-    return ((offset == kuint32max)
-                ? nullptr
-                : reinterpret_cast<NodeItem*>(space_ + node_offsets_[id]));
-  }
-
-  int32 num_nodes() const { return num_nodes_; }
-
- private:
-  char* InitializeNode(char* ptr, const Node* n);
-  size_t NodeItemBytes(const Node* n);
-
-  int32 num_nodes_ = 0;
-  uint32* node_offsets_ = nullptr;  // array of size "num_nodes_"
-  // node_offsets_[id] holds the byte offset for node w/ "id" in space_
-
-  char* space_;  // NodeItem objects are allocated here
-
-  TF_DISALLOW_COPY_AND_ASSIGN(GraphView);
-};
 
 class ExecutorImpl : public Executor {
  public:
@@ -351,6 +169,69 @@ class ExecutorImpl : public Executor {
 
  private:
   friend class ExecutorState;
+
+  // Stores execution time information about the kernels in an executor's graph.
+  class KernelStats {
+   public:
+    KernelStats() = default;
+
+    void Initialize(const GraphView& gview) {
+      is_expensive_ = absl::make_unique<std::atomic<bool>[]>(gview.num_nodes());
+      cost_estimates_ =
+          absl::make_unique<std::atomic_uint_fast64_t[]>(gview.num_nodes());
+      for (int32 i = 0; i < gview.num_nodes(); ++i) {
+        if (gview.node(i)) {
+          is_expensive_[i] =
+              gview.node(i)->kernel && gview.node(i)->kernel->IsExpensive();
+          cost_estimates_[i] = kInitialCostEstimateCycles;
+        }
+      }
+    }
+
+    // Returns true iff the given node is considered "expensive". The
+    // executor uses this flag to optimize graph execution, for example
+    // by "inlining" inexpensive kernels.
+    bool IsExpensive(const NodeItem& node) const {
+      return is_expensive_[node.node_id] &&
+             (cost_estimates_[node.node_id].load(std::memory_order_relaxed) >
+              kOpIsExpensiveThresholdCycles);
+    }
+
+    // Updates the dynamic cost estimate, which is used to determine whether the
+    // given node is expensive. The new cost estimate is a weighted average of
+    // the old cost estimate and the latest cost.
+    //
+    // NOTE: We currently only expect updates to the cost estimate when
+    // `is_expensive_[node.node_id]` is true (or at least, it *was* true, when
+    // we started to execute the kernel. As a result, we expect that a kernel
+    // can only ever transition from "expensive" to "inexpensive", but not vice
+    // versa.
+    void UpdateCostEstimate(const NodeItem& node, uint64 elapsed_cycles) {
+      // N.B. Updates to `cost_estimate` are atomic but unlocked.  Simultaneous
+      // updates may result in one or more updates being ignored.  This does not
+      // affect correctness but may slow down the update frequency.
+      std::atomic_uint_fast64_t& cost_estimate = cost_estimates_[node.node_id];
+      uint64 new_estimate = (kCostDecay - 1) *
+                                cost_estimate.load(std::memory_order_relaxed) /
+                                kCostDecay +
+                            (elapsed_cycles / kCostDecay);
+      cost_estimate.store(new_estimate, std::memory_order_relaxed);
+      if (new_estimate < kOpIsExpensiveThresholdCycles) {
+        is_expensive_[node.node_id].store(false, std::memory_order_relaxed);
+      }
+    }
+
+   private:
+    // Initial time (in CPU cycles) we expect an operation to take.  Used to
+    // determine whether an operation should be place in a threadpool.
+    // Operations start out "expensive".
+    static const uint64 kInitialCostEstimateCycles = 100 * 1000 * 1000;
+    static const uint64 kOpIsExpensiveThresholdCycles = 5000;
+    static const uint64 kCostDecay = 10;
+
+    std::unique_ptr<std::atomic<bool>[]> is_expensive_;
+    std::unique_ptr<std::atomic_uint_fast64_t[]> cost_estimates_;
+  };
 
   struct ControlFlowInfo {
     gtl::FlatSet<string> unique_frame_names;
@@ -402,9 +283,8 @@ class ExecutorImpl : public Executor {
   // Owned.
   LocalExecutorParams params_;
   GraphView gview_;
-
-  // A cached value of params_
-  bool device_record_tensor_accesses_ = false;
+  std::vector<PendingCounts::Handle> pending_ids_;
+  mutable KernelStats kernel_stats_;
 
   // Root nodes (with no in edges) that should form the initial ready queue
   std::vector<const NodeItem*> root_nodes_;
@@ -419,195 +299,6 @@ class ExecutorImpl : public Executor {
 
   TF_DISALLOW_COPY_AND_ASSIGN(ExecutorImpl);
 };
-
-// Infer memory allocation attributes of a node n's output,
-// based on its use node dst.  Note that dst might not be directly
-// connected to n by a single edge, but might be a downstream
-// consumer of n's output by reference.  *attr is updated with any
-// necessary attributes.
-Status InferAllocAttr(const Node* n, const Node* dst,
-                      const DeviceNameUtils::ParsedName& local_dev_name,
-                      AllocatorAttributes* attr);
-
-GraphView::~GraphView() {
-  static_assert(std::is_trivially_destructible<AllocatorAttributes>::value,
-                "Update code if AllocatorAttributes gains a destructor");
-  static_assert(std::is_trivially_destructible<EdgeInfo>::value,
-                "Update code if EdgeInfo gains a destructor");
-  for (int i = 0; i < num_nodes_; i++) {
-    NodeItem* n = node(i);
-    if (n != nullptr) {
-      n->NodeItem::~NodeItem();
-      // Memory for "n" itself is held in space_ & gets cleaned up below
-    }
-  }
-  delete[] node_offsets_;
-  delete[] space_;
-}
-
-size_t GraphView::NodeItemBytes(const Node* n) {
-  const size_t num_output_edges = n->out_edges().size();
-  const int num_inputs = n->num_inputs();
-  const int num_outputs = n->num_outputs();
-
-  // Compute number of bytes needed for NodeItem and variable length data.
-  // We do not subtract sizeof(var) since num_inputs/num_outputs might
-  // both be zero.
-  const size_t raw_bytes =
-      sizeof(NodeItem)                             // Fixed
-      + num_output_edges * sizeof(EdgeInfo)        // output_edges[...]
-      + num_outputs * sizeof(AllocatorAttributes)  // output_attr[...]
-      + num_outputs * sizeof(int)                  // forward_from[num_outputs]
-      + num_inputs * sizeof(uint8)                 // input_type[num_inputs]
-      + num_outputs * sizeof(uint8);               // output_type[num_outputs]
-  static constexpr size_t kItemAlignment = sizeof(NodeItem*);
-  static_assert(kItemAlignment % alignof(NodeItem) == 0,
-                "NodeItem must be aligned with kItemAlignment");
-  static_assert(kItemAlignment % alignof(EdgeInfo) == 0,
-                "EdgeInfo must be aligned with kItemAlignment");
-  static_assert(kItemAlignment % alignof(AllocatorAttributes) == 0,
-                "AllocatorAttributes must be aligned with kItemAlignment");
-  static_assert(sizeof(NodeItem) % alignof(EdgeInfo) == 0,
-                "NodeItem must be aligned with EdgeInfo");
-  static_assert(sizeof(NodeItem) % alignof(AllocatorAttributes) == 0,
-                "NodeItem must be aligned with AllocatorAttributes");
-  static_assert(sizeof(EdgeInfo) % alignof(AllocatorAttributes) == 0,
-                "EdgeInfo must be aligned with AllocatorAttributes");
-  const size_t bytes =
-      ((raw_bytes + kItemAlignment - 1) / kItemAlignment) * kItemAlignment;
-  return bytes;
-}
-
-char* GraphView::InitializeNode(char* ptr, const Node* n) {
-  const int id = n->id();
-  CHECK(node_offsets_[id] == kuint32max);  // Initial value in constructor
-
-  const size_t bytes = NodeItemBytes(n);
-  constexpr size_t kItemAlignment = sizeof(NodeItem*);
-  CHECK_EQ(reinterpret_cast<uintptr_t>(ptr) % kItemAlignment, 0);
-  NodeItem* item = reinterpret_cast<NodeItem*>(ptr);
-
-  // We store a 32-bit offset relative to the beginning of space_, so that we
-  // only need an array of 32-bit values to map from node id to the NodeItem*,
-  // (versus 64 bits on most machines if we just stored an array of NodeItem*
-  // pointers). Casting to int64 is needed on 32bit CPU to avoid comparing
-  // values as "int" vs "size_t" in CHECK_LE.
-  CHECK_LE(static_cast<int64>(ptr - space_), kuint32max);
-  const uint32 offset = static_cast<uint32>(ptr - space_);
-  node_offsets_[id] = offset;
-  ptr += bytes;
-
-  const size_t num_output_edges = n->out_edges().size();
-  const int num_inputs = n->num_inputs();
-  const int num_outputs = n->num_outputs();
-
-  new (item) NodeItem();
-  item->num_inputs = num_inputs;
-  item->num_outputs = num_outputs;
-  item->num_output_edges = num_output_edges;
-
-  // Fill output edges.
-  // Keep track of the last EdgeInfo in the EdgeInfo array that references
-  // a given output slot.  For all but the last, we need to do a copy of the
-  // Tensor when propagating results downstream in the graph, but for the
-  // last one, we can just do a move of the Tensor object to propagate it.
-  gtl::InlinedVector<EdgeInfo*, 4> last_indices(num_outputs, nullptr);
-  EdgeInfo* dst_edge = item->output_edge_base();
-  for (auto e : n->out_edges()) {
-    dst_edge->dst_id = e->dst()->id();
-    CHECK_LE(e->src_output(), 0x3FFFFFFF);  // Must fit in 31 bits
-    dst_edge->output_slot = e->src_output();
-    dst_edge->is_last = false;
-    const int output_slot = dst_edge->output_slot;
-    if (output_slot >= 0) {
-      last_indices[output_slot] = dst_edge;
-    }
-    dst_edge->input_slot = e->dst_input();
-    dst_edge++;
-  }
-  for (EdgeInfo* edge_info : last_indices) {
-    if (edge_info != nullptr) {
-      edge_info->is_last = true;
-    }
-  }
-
-  AllocatorAttributes* output_attrs = item->output_attr_base();
-  for (int i = 0; i < num_outputs; i++) {
-    new (&output_attrs[i]) AllocatorAttributes();
-  }
-
-  DCHECK_LT(DataType_MAX, 255);  // Must fit in uint8
-  uint8* input_types = item->input_type_base();
-  for (int i = 0; i < num_inputs; i++) {
-    input_types[i] = static_cast<uint8>(n->input_type(i));
-    DCHECK_EQ(item->input_type(i), n->input_type(i));
-  }
-
-  // Check ScopedAllocatorAttrs and forward_from.  Also assign output_types.
-  {
-    std::vector<int> forward_input;
-    Status fwd_status =
-        GetNodeAttr(n->attrs(), "_forward_input", &forward_input);
-    std::vector<int> scoped_allocator_attrs;
-    Status sa_status =
-        GetNodeAttr(n->attrs(), "_scoped_allocator", &scoped_allocator_attrs);
-
-    int* forward_from = item->forward_from_base();
-    uint8* output_types = item->output_type_base();
-    for (int i = 0; i < num_outputs; ++i) {
-      output_types[i] = static_cast<uint8>(n->output_type(i));
-      DCHECK_EQ(item->output_type(i), n->output_type(i));
-
-      forward_from[i] = OpKernelContext::Params::kNoReservation;
-      if (sa_status.ok()) {
-        for (int j = 0; j < scoped_allocator_attrs.size(); j += 2) {
-          if (scoped_allocator_attrs[j] == i) {
-            // This output slot must be explicitly allocated from a
-            // ScopedAllocator.
-            forward_from[i] = OpKernelContext::Params::kNeverForward;
-            DCHECK_EQ(output_attrs[i].scope_id, 0);
-            output_attrs[i].scope_id = scoped_allocator_attrs[j + 1];
-          }
-        }
-      }
-      if (fwd_status.ok() &&
-          forward_from[i] == OpKernelContext::Params::kNoReservation) {
-        DCHECK_EQ(forward_input.size() % 2, 0);
-        for (int j = 0; j < forward_input.size(); j += 2) {
-          if (forward_input[j + 1] == i) {
-            DCHECK_EQ(forward_from[i], OpKernelContext::Params::kNoReservation);
-            forward_from[i] = forward_input[j];
-            break;
-          }
-        }
-      }
-    }
-  }
-
-  return ptr;
-}
-
-void GraphView::Initialize(const Graph* g) {
-  CHECK(node_offsets_ == nullptr);
-  const int num_nodes = g->num_node_ids();
-  num_nodes_ = num_nodes;
-  size_t total_bytes = 0;
-  for (const Node* n : g->nodes()) {
-    total_bytes += NodeItemBytes(n);
-  }
-
-  node_offsets_ = new uint32[num_nodes];
-  for (int i = 0; i < num_nodes; i++) {
-    node_offsets_[i] = kuint32max;
-  }
-
-  space_ = new char[total_bytes];  // NodeItem objects are allocated here
-  char* ptr = space_;
-  for (const Node* n : g->nodes()) {
-    ptr = InitializeNode(ptr, n);
-  }
-  CHECK_EQ(ptr, space_ + total_bytes);
-}
 
 void GetMaxPendingCounts(const Node* n, size_t* max_pending,
                          size_t* max_dead_count) {
@@ -633,24 +324,22 @@ void GetMaxPendingCounts(const Node* n, size_t* max_pending,
 }
 
 Status ExecutorImpl::Initialize(const Graph& graph) {
-  gview_.Initialize(&graph);
+  TF_RETURN_IF_ERROR(gview_.Initialize(&graph));
 
   // Build the information about frames in this subgraph.
   ControlFlowInfo cf_info;
   TF_RETURN_IF_ERROR(BuildControlFlowInfo(&graph, &cf_info));
 
-  // Cache this value so we make this virtual function call once, rather
-  // that O(# steps * # nodes per step) times.
-  device_record_tensor_accesses_ =
-      params_.device->RequiresRecordingAccessedTensors();
-
   for (auto& it : cf_info.unique_frame_names) {
     EnsureFrameInfo(it)->nodes = new std::vector<const NodeItem*>;
   }
 
+  pending_ids_.resize(gview_.num_nodes());
+
   // Preprocess every node in the graph to create an instance of op
   // kernel for each node.
   for (const Node* n : graph.nodes()) {
+    if (IsSink(n)) continue;
     const int id = n->id();
     const string& frame_name = cf_info.frame_names[id];
     FrameInfo* frame_info = EnsureFrameInfo(frame_name);
@@ -670,6 +359,13 @@ Status ExecutorImpl::Initialize(const Graph& graph) {
     CHECK(item->kernel);
     item->kernel_is_async = (item->kernel->AsAsync() != nullptr);
     item->is_merge = IsMerge(n);
+    item->is_any_consumer_merge_or_control_trigger = false;
+    for (const Node* consumer : n->out_nodes()) {
+      if (IsMerge(consumer) || IsControlTrigger(consumer)) {
+        item->is_any_consumer_merge_or_control_trigger = true;
+        break;
+      }
+    }
     const Tensor* const_tensor = item->kernel->const_tensor();
     if (const_tensor) {
       // Hold onto a shallow copy of the constant tensor in `*this` so that the
@@ -691,7 +387,6 @@ Status ExecutorImpl::Initialize(const Graph& graph) {
     item->is_exit = IsExit(n);
     item->is_control_trigger = IsControlTrigger(n);
     item->is_source = IsSource(n);
-    item->is_sink = IsSink(n);
     item->is_enter_exit_or_next_iter =
         (IsEnter(n) || IsExit(n) || IsNextIteration(n));
     item->is_transfer_node = IsTransferNode(n);
@@ -705,7 +400,7 @@ Status ExecutorImpl::Initialize(const Graph& graph) {
     // space to store these maximal count values.
     size_t max_pending, max_dead;
     GetMaxPendingCounts(n, &max_pending, &max_dead);
-    item->pending_id =
+    pending_ids_[id] =
         frame_info->pending_counts_layout.CreateHandle(max_pending, max_dead);
 
     // See if this node is a root node, and if so, add item to root_nodes_.
@@ -724,8 +419,9 @@ Status ExecutorImpl::Initialize(const Graph& graph) {
     // Record information about whether each output of the op is used.
     std::unique_ptr<bool[]> outputs_required(new bool[n->num_outputs()]);
     std::fill(&outputs_required[0], &outputs_required[n->num_outputs()], false);
-    size_t unused_outputs = n->num_outputs();
+    int32 unused_outputs = n->num_outputs();
     for (const Edge* e : n->out_edges()) {
+      if (IsSink(e->dst())) continue;
       if (e->src_output() >= 0) {
         if (!outputs_required[e->src_output()]) {
           --unused_outputs;
@@ -743,10 +439,24 @@ Status ExecutorImpl::Initialize(const Graph& graph) {
     }
   }
 
-  // Initialize PendingCounts only after item->pending_id is initialized for
-  // all nodes.
-  InitializePending(&graph, cf_info);
+  // Rewrite each `EdgeInfo::input_slot` member to refer directly to the input
+  // location.
+  for (const Node* n : graph.nodes()) {
+    if (IsSink(n)) continue;
+    const int id = n->id();
+    NodeItem* item = gview_.node(id);
 
+    for (EdgeInfo& e : item->mutable_output_edges()) {
+      const int dst_id = e.dst_id;
+      NodeItem* dst_item = gview_.node(dst_id);
+      e.input_slot += dst_item->input_start;
+    }
+  }
+
+  // Initialize PendingCounts only after pending_ids_[node.id] is initialized
+  // for all nodes.
+  InitializePending(&graph, cf_info);
+  kernel_stats_.Initialize(gview_);
   return gview_.SetAllocAttrs(&graph, params_.device);
 }
 
@@ -766,154 +476,6 @@ bool ExtractScopedAllocatorAttr(const std::vector<int>& sc_attr,
     }
   }
   return false;
-}
-
-void GraphView::SetScopedAllocatorAttrs(
-    const std::vector<const Node*>& sa_nodes) {
-  for (const Node* sa : sa_nodes) {
-    NodeItem* sa_item = node(sa->id());
-    AllocatorAttributes* sa_attrs = sa_item->output_attr_base();
-    // Control edges out of the ScopedAllocator should be use instances, but may
-    // include a few other nodes.
-    for (const auto& e : sa->out_edges()) {
-      if (!e->IsControlEdge()) {
-        continue;
-      }
-      Node* use_node = e->dst();
-      NodeItem* item = node(use_node->id());
-      AllocatorAttributes* use_attrs = item->output_attr_base();
-      std::vector<int> scoped_allocator_attrs;
-      Status s = GetNodeAttr(use_node->attrs(), "_scoped_allocator",
-                             &scoped_allocator_attrs);
-      if (!s.ok()) {
-        VLOG(2) << "Failed to find expected ScopedAllocator attr on "
-                << use_node->name();
-        continue;
-      }
-      // There can be more than one output using ScopedAllocation, but this
-      // analysis assumes they use the same ScopedAllocator.
-      for (const auto& e : use_node->out_edges()) {
-        if (!e->IsControlEdge()) {
-          AllocatorAttributes attr;
-          if (ExtractScopedAllocatorAttr(scoped_allocator_attrs,
-                                         e->src_output(), &attr)) {
-            // Set the scope_id on this use instance node.
-            (use_attrs + e->src_output())->Merge(attr);
-            // Propagate the other attributes of this node back to the SA node.
-            attr = *(use_attrs + e->src_output());
-            attr.scope_id = 0;
-            sa_attrs->Merge(attr);
-          }
-        }
-      }
-    }
-  }
-}
-
-Status GraphView::SetAllocAttrs(const Graph* g, const Device* device) {
-  Status s;
-  DeviceNameUtils::ParsedName local_dev_name = device->parsed_name();
-
-  std::vector<const Node*> scoped_allocator_instances;
-  for (const Node* n : g->nodes()) {
-    NodeItem* item = node(n->id());
-    AllocatorAttributes* attrs = item->output_attr_base();
-    if (IsScopedAllocator(n)) {
-      scoped_allocator_instances.push_back(n);
-    }
-
-    // Examine the out edges of each node looking for special use
-    // cases that may affect memory allocation attributes.
-    for (const auto& e : n->out_edges()) {
-      if (!e->IsControlEdge()) {
-        AllocatorAttributes attr;
-        s = InferAllocAttr(n, e->dst(), local_dev_name, &attr);
-        if (!s.ok()) return s;
-        if (attr.value != 0 || attr.scope_id != 0) {
-          attrs[e->src_output()].Merge(attr);
-        }
-      }
-    }
-
-    for (int out = 0; out < n->num_outputs(); out++) {
-      const OpKernel* op_kernel = item->kernel;
-      DCHECK_LT(out, op_kernel->output_memory_types().size());
-      bool on_host = op_kernel->output_memory_types()[out] == HOST_MEMORY;
-      if (on_host) {
-        AllocatorAttributes h;
-        h.set_on_host(on_host);
-        attrs[out].Merge(h);
-      }
-    }
-  }
-  SetScopedAllocatorAttrs(scoped_allocator_instances);
-  return s;
-}
-
-Status InferAllocAttr(const Node* n, const Node* dst,
-                      const DeviceNameUtils::ParsedName& local_dev_name,
-                      AllocatorAttributes* attr) {
-  Status s;
-  // Note that it's possible for *n to be a Recv and *dst to be a Send,
-  // so these two cases are not mutually exclusive.
-  if (IsRecv(n)) {
-    string src_name;
-    s = GetNodeAttr(n->attrs(), "send_device", &src_name);
-    if (!s.ok()) return s;
-    DeviceNameUtils::ParsedName parsed_src_name;
-    if (!DeviceNameUtils::ParseFullName(src_name, &parsed_src_name)) {
-      s = errors::Internal("Bad send_device attr '", src_name, "' in node ",
-                           n->name());
-      return s;
-    }
-    if (!DeviceNameUtils::IsSameAddressSpace(parsed_src_name, local_dev_name)) {
-      // Value is going to be the sink of an RPC.
-      attr->set_nic_compatible(true);
-      VLOG(2) << "node " << n->name() << " is the sink of an RPC in";
-    } else if ((local_dev_name.type == "CPU" || n->IsHostRecv()) &&
-               parsed_src_name.type != "CPU") {
-      // Value is going to be the sink of a local DMA from GPU to CPU (or
-      // other types of accelerators).
-      attr->set_gpu_compatible(true);
-      VLOG(2) << "node " << n->name() << " is the sink of a gpu->cpu copy";
-    } else {
-      VLOG(2) << "default alloc case local type " << local_dev_name.type
-              << " remote type " << parsed_src_name.type;
-    }
-  }
-  if (IsSend(dst)) {
-    string dst_name;
-    s = GetNodeAttr(dst->attrs(), "recv_device", &dst_name);
-    if (!s.ok()) return s;
-    DeviceNameUtils::ParsedName parsed_dst_name;
-    if (!DeviceNameUtils::ParseFullName(dst_name, &parsed_dst_name)) {
-      s = errors::Internal("Bad recv_device attr '", dst_name, "' in node ",
-                           n->name());
-      return s;
-    }
-    if (!DeviceNameUtils::IsSameAddressSpace(parsed_dst_name, local_dev_name)) {
-      // Value is going to be the source of an RPC.
-      attr->set_nic_compatible(true);
-      VLOG(2) << "node " << n->name() << " is the source of an RPC out";
-    } else if ((local_dev_name.type == "CPU" || dst->IsHostSend()) &&
-               parsed_dst_name.type != "CPU") {
-      // Value is going to be the source of a local DMA from CPU to GPU (or
-      // other types of accelerators).
-      // Note that this does not cover the case where the allocation of the
-      // output tensor is not generated by the src: n.
-      attr->set_gpu_compatible(true);
-      VLOG(2) << "node " << n->name() << " is the source of a cpu->gpu copy";
-    } else {
-      VLOG(2) << "default alloc case local type " << local_dev_name.type
-              << " remote type " << parsed_dst_name.type;
-    }
-  }
-  if (n->IsCollective()) {
-    // We'll make the sweeping assumption that any collective op is going
-    // to be involved in network i/o.
-    attr->set_nic_compatible(true);
-  }
-  return s;
 }
 
 // The state associated with one invocation of ExecutorImpl::Run.
@@ -1087,10 +649,9 @@ class ExecutorState {
     void increment_dead_count(PendingCounts::Handle h) {
       counts.increment_dead_count(h);
     }
-    void adjust_for_activation(PendingCounts::Handle h, bool increment_dead,
-                               int* pending_result, int* dead_result) {
-      counts.adjust_for_activation(h, increment_dead, pending_result,
-                                   dead_result);
+    PendingCounts::AdjustResult adjust_for_activation(PendingCounts::Handle h,
+                                                      bool increment_dead) {
+      return counts.adjust_for_activation(h, increment_dead);
     }
 
     ~IterationState() { delete[] input_tensors; }
@@ -1305,6 +866,18 @@ class ExecutorState {
         iterations[i] = nullptr;
       }
     }
+
+   private:
+    // REQUIRES: `!item->is_any_consumer_merge_or_control_trigger`.
+    void ActivateNodesFastPath(const NodeItem* item, const bool is_dead,
+                               int64 iter, EntryVector* outputs,
+                               TaggedNodeSeq* ready)
+        TF_EXCLUSIVE_LOCKS_REQUIRED(mu);
+
+    void ActivateNodesSlowPath(const NodeItem* item, const bool is_dead,
+                               int64 iter, EntryVector* outputs,
+                               TaggedNodeSeq* ready)
+        TF_EXCLUSIVE_LOCKS_REQUIRED(mu);
   };
 
   // A tagged node: <frame*, iter, node*>.
@@ -1444,8 +1017,6 @@ class ExecutorState {
 
   Status ProcessSync(const NodeItem& item, OpKernelContext::Params* params,
                      EntryVector* outputs,
-                     TensorReferenceVector* accessed_tensors,
-                     DeviceContext** device_context,
                      NodeExecStatsInterface* stats);
   void ProcessAsync(const NodeItem& item, const OpKernelContext::Params& params,
                     const TaggedNode& tagged_node, Entry* first_input,
@@ -1486,7 +1057,7 @@ class ExecutorState {
 
   // For debugging/logging only.
   inline void MaybeMarkCompleted(FrameState* frame, int64 iter,
-                                 const NodeItem& item);
+                                 const int node_id);
 
   // Provide debugging output about an outstanding node in the executor.
   void DumpPendingNodeState(const int node_id, const Entry* input_vector,
@@ -1613,6 +1184,7 @@ Status ExecutorImpl::BuildControlFlowInfo(const Graph* g,
 
     for (const Edge* out_edge : curr_node->out_edges()) {
       Node* out = out_edge->dst();
+      if (IsSink(out)) continue;
       const int out_id = out->id();
 
       // Add to ready queue if not visited.
@@ -1641,13 +1213,13 @@ void ExecutorImpl::InitializePending(const Graph* graph,
     finfo->pending_counts = counts;
   }
   for (const Node* n : graph->nodes()) {
+    if (IsSink(n)) continue;
     const int id = n->id();
     const string& name = cf_info.frame_names[id];
     size_t max_pending, max_dead;
     GetMaxPendingCounts(n, &max_pending, &max_dead);
-    const NodeItem* item = gview_.node(id);
     PendingCounts* counts = EnsureFrameInfo(name)->pending_counts;
-    counts->set_initial_count(item->pending_id, max_pending);
+    counts->set_initial_count(pending_ids_[id], max_pending);
   }
 }
 
@@ -1729,8 +1301,8 @@ struct ExecutorState::AsyncState {
 
 // Returns true if `item` might be traced by the given trace and event
 // collectors. Returns false only if `item` definitely will not be traced.
-bool MightTrace(const NodeItem& item,
-                const tracing::EventCollector* event_collector) {
+bool MightTrace(const tracing::EventCollector* event_collector,
+                bool is_expensive) {
   // Tracing will only be enabled if either `event_collector` is non null,
   // or `trace_collector` is non-null and enabled for this particular kernel.
   // Although `profiler::TraceMe`, `profiler::ScopedAnnotation`, and
@@ -1744,15 +1316,12 @@ bool MightTrace(const NodeItem& item,
 
   if (profiler::ScopedAnnotation::IsEnabled()) return true;
 
-  return profiler::TraceMe::Active(
-      profiler::GetTFTraceMeLevel(item.kernel->IsExpensive()));
+  return profiler::TraceMe::Active(profiler::GetTFTraceMeLevel(is_expensive));
 }
 
 Status ExecutorState::ProcessSync(const NodeItem& item,
                                   OpKernelContext::Params* params,
                                   EntryVector* outputs,
-                                  TensorReferenceVector* accessed_tensors,
-                                  DeviceContext** device_context,
                                   NodeExecStatsInterface* stats) {
   Status s;
   OpKernelContext ctx(params, item.num_outputs);
@@ -1760,8 +1329,9 @@ Status ExecutorState::ProcessSync(const NodeItem& item,
 
   OpKernel* op_kernel = item.kernel;
   Device* device = impl_->params_.device;
+  const bool is_expensive = impl_->kernel_stats_.IsExpensive(item);
 
-  if (TF_PREDICT_FALSE(MightTrace(item, event_collector_))) {
+  if (TF_PREDICT_FALSE(MightTrace(event_collector_, is_expensive))) {
     tracing::ScopedRegion region(tracing::EventCategory::kCompute,
                                  op_kernel->name_view());
     profiler::AnnotatedTraceMe activity(
@@ -1769,26 +1339,21 @@ Status ExecutorState::ProcessSync(const NodeItem& item,
           return op_kernel->TraceString(
               &ctx, /*verbose=*/profiler::TfOpDetailsEnabled());
         },
-        profiler::GetTFTraceMeLevel(op_kernel->IsExpensive()));
+        profiler::GetTFTraceMeLevel(is_expensive));
     device->Compute(op_kernel, &ctx);
     nodestats::SetOpEnd(stats);
     s = ProcessOutputs(item, &ctx, outputs, stats);
   } else {
     // In the common case, avoid creating any tracing objects.
-    if (op_kernel->IsExpensive()) {
+    if (is_expensive) {
       KernelTimer timer;
       device->Compute(op_kernel, &ctx);
-      op_kernel->UpdateCostEstimate(timer.ElapsedCycles());
+      impl_->kernel_stats_.UpdateCostEstimate(item, timer.ElapsedCycles());
     } else {
       device->Compute(op_kernel, &ctx);
     }
     nodestats::SetOpEnd(stats);
     s = ProcessOutputs(item, &ctx, outputs, stats);
-  }
-  if (TF_PREDICT_FALSE(impl_->device_record_tensor_accesses_) && s.ok()) {
-    // Get the list of all tensors accessed during the execution
-    ctx.retrieve_accessed_tensors(accessed_tensors);
-    *device_context = ctx.op_device_context();
   }
   nodestats::SetMemory(stats, &ctx);
   return s;
@@ -1827,21 +1392,12 @@ void ExecutorState::ProcessAsync(const NodeItem& item,
     }
     FrameState* input_frame = state->tagged_node.input_frame;
     const int64 input_iter = state->tagged_node.input_iter;
-    MaybeMarkCompleted(input_frame, input_iter, *state->item);
+    MaybeMarkCompleted(input_frame, input_iter, state->item->node_id);
     TaggedNodeSeq ready;
     if (s.ok()) {
       PropagateOutputs(state->tagged_node, state->item, &outputs, &ready);
     }
     outputs.clear();
-    if (TF_PREDICT_FALSE(impl_->device_record_tensor_accesses_) && s.ok()) {
-      // Get the list of all tensors accessed during the execution
-      TensorReferenceVector accessed;
-      state->ctx.retrieve_accessed_tensors(&accessed);
-      nodestats::SetReferencedTensors(stats, accessed);
-      // callee takes ownership of the vector
-      device->ConsumeListOfAccessedTensors(state->ctx.op_device_context(),
-                                           accessed);
-    }
     const bool completed = NodeDone(s, &ready, stats, nullptr);
     delete state;
     if (completed) ScheduleFinish();
@@ -1853,7 +1409,7 @@ void ExecutorState::ProcessAsync(const NodeItem& item,
           return async_kernel->TraceString(
               &state->ctx, /*verbose=*/profiler::TfOpDetailsEnabled());
         },
-        profiler::GetTFTraceMeLevel(async_kernel->IsExpensive()));
+        profiler::GetTFTraceMeLevel(impl_->kernel_stats_.IsExpensive(item)));
     impl_->params_.device->ComputeAsync(async_kernel, &state->ctx,
                                         std::move(done));
   }
@@ -1879,11 +1435,7 @@ void ExecutorState::ProcessConstTensor(const NodeItem& item,
 void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_nsec) {
   profiler::TraceMe activity(
       [&] {
-        int64 id = step_id_;
-        if (step_container_ && step_container_->step_id()) {
-          id = step_container_->step_id();
-        }
-        return absl::StrCat("ExecutorState::Process#id=", id,
+        return absl::StrCat("ExecutorState::Process#id=", step_id_,
                             ",iter_num=", tagged_node.input_iter, "#");
       },
       2);
@@ -1905,7 +1457,6 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_nsec) {
     params.device = device;
   }
   params.log_memory = log_memory_;
-  params.record_tensor_accesses = impl_->device_record_tensor_accesses_;
   params.rendezvous = rendezvous_;
   params.collective_executor = collective_executor_;
   params.session_state = session_state_;
@@ -1963,7 +1514,8 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_nsec) {
     // add better optional debugging support.
     if (vlog_ && VLOG_IS_ON(1)) {
       mutex_lock l(input_frame->mu);
-      input_frame->GetIteration(input_iter)->mark_started(item.pending_id);
+      input_frame->GetIteration(input_iter)
+          ->mark_started(impl_->pending_ids_[id]);
     }
 
     params.track_allocations = false;
@@ -1988,7 +1540,6 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_nsec) {
     Entry* first_input = input_tensors + item.input_start;
     outputs.clear();
 
-    TensorReferenceVector accessed_tensors;
     // Only execute this node if it is not dead or it is a send/recv
     // transfer node. For transfer nodes, we need to propagate the "dead"
     // bit even when the node is dead.
@@ -2010,7 +1561,7 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_nsec) {
         for (int i = 0; i < num_inputs; ++i) {
           (first_input + i)->ClearVal();
         }
-        MaybeMarkCompleted(input_frame, input_iter, item);
+        MaybeMarkCompleted(input_frame, input_iter, id);
         // Continue to process the nodes in 'inline_ready'.
         completed = NodeDone(s, &ready, stats, &inline_ready);
         continue;
@@ -2028,15 +1579,7 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_nsec) {
         ProcessAsync(item, params, tagged_node, first_input, stats);
         launched_asynchronously = true;
       } else {
-        DeviceContext* device_context = nullptr;
-        s = ProcessSync(item, &params, &outputs, &accessed_tensors,
-                        &device_context, stats);
-        if (!accessed_tensors.empty()) {
-          nodestats::SetReferencedTensors(stats, accessed_tensors);
-          // device_context is set above in `ProcessSync()`.
-          device->ConsumeListOfAccessedTensors(device_context,
-                                               accessed_tensors);
-        }
+        s = ProcessSync(item, &params, &outputs, stats);
       }
     }
 
@@ -2053,7 +1596,7 @@ void ExecutorState::Process(TaggedNode tagged_node, int64 scheduled_nsec) {
       for (int i = 0; i < num_inputs; ++i) {
         (first_input + i)->ClearVal();
       }
-      MaybeMarkCompleted(input_frame, input_iter, item);
+      MaybeMarkCompleted(input_frame, input_iter, id);
       // Propagates outputs.
       if (s.ok()) {
         PropagateOutputs(tagged_node, &item, &outputs, &ready);
@@ -2284,10 +1827,11 @@ void ExecutorState::PropagateOutputs(const TaggedNode& tagged_node,
                                      TaggedNodeSeq* ready) {
   profiler::TraceMe activity(
       [&]() {
-        return strings::StrCat("ExecutorPropagateOutputs#", "id=", step_id_,
-                               ",kernel_name=", item->kernel->name_view(),
-                               ",num_output_edges=", item->num_output_edges,
-                               "#");
+        return strings::StrCat(
+            "ExecutorPropagateOutputs#", "id=", step_id_,
+            ",kernel_name=", item->kernel->name_view(),
+            ",num_output_edges=", item->num_output_edges,
+            ",num_output_control_edges=", item->num_output_control_edges, "#");
       },
       profiler::GetTFTraceMeLevel(/*is_expensive=*/false));
 
@@ -2489,7 +2033,7 @@ void ExecutorState::ScheduleReady(TaggedNodeSeq* ready,
     } else {
       for (auto& tagged_node : *ready) {
         const NodeItem& item = *tagged_node.node_item;
-        if (tagged_node.is_dead || !item.kernel->IsExpensive()) {
+        if (tagged_node.is_dead || !impl_->kernel_stats_.IsExpensive(item)) {
           // Inline this inexpensive node.
           inline_ready->push_back(tagged_node);
         } else {
@@ -2518,12 +2062,12 @@ void ExecutorState::ScheduleReady(TaggedNodeSeq* ready,
 }
 
 inline void ExecutorState::MaybeMarkCompleted(FrameState* frame, int64 iter,
-                                              const NodeItem& item) {
+                                              const int node_id) {
   // TODO(misard) Replace with a finer-grain enabling flag once we
   // add better optional debugging support.
   if (vlog_ && VLOG_IS_ON(1)) {
     mutex_lock l(frame->mu);
-    frame->GetIteration(iter)->mark_completed(item.pending_id);
+    frame->GetIteration(iter)->mark_completed(impl_->pending_ids_[node_id]);
   }
 }
 
@@ -2598,7 +2142,7 @@ void ExecutorState::DumpIterationState(const FrameState* frame,
   const std::vector<const NodeItem*>* nodes = frame->nodes;
   // Dump any waiting nodes that are holding on to tensors.
   for (const NodeItem* node : *nodes) {
-    PendingCounts::Handle pending_id = node->pending_id;
+    PendingCounts::Handle pending_id = impl_->pending_ids_[node->node_id];
     if (iteration->node_state(pending_id) == PendingCounts::PENDING_NOTREADY ||
         iteration->node_state(pending_id) == PendingCounts::PENDING_READY) {
       DumpPendingNodeState(node->node_id, iteration->input_tensors, false);
@@ -2606,7 +2150,7 @@ void ExecutorState::DumpIterationState(const FrameState* frame,
   }
   // Then the active nodes.
   for (const NodeItem* node : *nodes) {
-    PendingCounts::Handle pending_id = node->pending_id;
+    PendingCounts::Handle pending_id = impl_->pending_ids_[node->node_id];
     if (iteration->node_state(pending_id) == PendingCounts::STARTED) {
       DumpActiveNodeState(node->node_id, iteration->input_tensors);
     }
@@ -2822,45 +2366,61 @@ void ExecutorState::DeleteFrame(FrameState* frame, TaggedNodeSeq* ready) {
     mutex_lock parent_frame_lock(parent_frame->mu);
     // Propagate all the dead exits to the parent frame.
     mutex_lock this_frame_lock(frame->mu);
+
     for (const NodeItem* item : frame->dead_exits) {
       auto parent_iter_state = parent_frame->GetIteration(parent_iter);
-      for (int i = 0; i < item->num_output_edges; ++i) {
-        const EdgeInfo& e = item->output_edge(i);
 
-        const NodeItem& dst_item = *impl_->gview_.node(e.dst_id);
-        const auto dst_pending_id = dst_item.pending_id;
-
-        // TODO(yuanbyu): We don't need this if we require the subgraph
-        // given to an executor not to contain a sink node.
-        if (dst_item.is_sink) continue;
-
-        bool dst_dead = true;
-        bool dst_ready = false;
-        // We know this is a dead input to dst.
-        if (dst_item.is_merge) {
-          if (e.output_slot == Graph::kControlSlot) {
-            parent_iter_state->decrement_pending(dst_pending_id, 2);
-            int count = parent_iter_state->pending(dst_pending_id);
-            int dead_cnt = parent_iter_state->dead_count(dst_pending_id);
-            dst_dead = (dead_cnt == dst_item.num_inputs);
-            dst_ready = (count == 0) || ((count == 1) && dst_dead);
-          } else {
-            parent_iter_state->increment_dead_count(dst_pending_id);
-            const int dead_cnt = parent_iter_state->dead_count(dst_pending_id);
-            dst_dead = (dead_cnt == dst_item.num_inputs);
-            dst_ready =
-                (parent_iter_state->pending(dst_pending_id) == 1) && dst_dead;
-          }
-        } else {
-          parent_iter_state->increment_dead_count(dst_pending_id);
-          dst_ready =
-              (parent_iter_state->decrement_pending(dst_pending_id, 1) == 0);
-        }
+      auto maybe_add_to_ready = [&](const NodeItem& dst_item, bool dst_ready,
+                                    bool dst_dead) {
         if (dst_ready) {
           if (dst_item.is_control_trigger) dst_dead = false;
           ready->emplace_back(&dst_item, parent_frame, parent_iter, dst_dead);
           parent_iter_state->outstanding_ops++;
         }
+      };
+
+      auto propagate_to_non_merge = [&](PendingCounts::Handle dst_pending_id) {
+        parent_iter_state->increment_dead_count(dst_pending_id);
+        return parent_iter_state->decrement_pending(dst_pending_id, 1) == 0;
+      };
+
+      for (const EdgeInfo& e : item->output_edges()) {
+        const NodeItem& dst_item = *impl_->gview_.node(e.dst_id);
+        const auto dst_pending_id = impl_->pending_ids_[e.dst_id];
+
+        bool dst_dead = true;
+        bool dst_ready;
+        // We know this is a dead input to dst.
+        if (dst_item.is_merge) {
+          parent_iter_state->increment_dead_count(dst_pending_id);
+          const int dead_cnt = parent_iter_state->dead_count(dst_pending_id);
+          dst_dead = (dead_cnt == dst_item.num_inputs);
+          dst_ready =
+              (parent_iter_state->pending(dst_pending_id) == 1) && dst_dead;
+        } else {
+          dst_ready = propagate_to_non_merge(dst_pending_id);
+        }
+        maybe_add_to_ready(dst_item, dst_ready, dst_dead);
+      }
+
+      for (const ControlEdgeInfo& e : item->output_control_edges()) {
+        const NodeItem& dst_item = *impl_->gview_.node(e.dst_id);
+        const auto dst_pending_id = impl_->pending_ids_[e.dst_id];
+
+        bool dst_dead;
+        bool dst_ready;
+        // We know this is a dead input to dst.
+        if (dst_item.is_merge) {
+          parent_iter_state->decrement_pending(dst_pending_id, 2);
+          int count = parent_iter_state->pending(dst_pending_id);
+          int dead_cnt = parent_iter_state->dead_count(dst_pending_id);
+          dst_dead = (dead_cnt == dst_item.num_inputs);
+          dst_ready = (count == 0) || ((count == 1) && dst_dead);
+        } else {
+          dst_dead = true;
+          dst_ready = propagate_to_non_merge(dst_pending_id);
+        }
+        maybe_add_to_ready(dst_item, dst_ready, dst_dead);
       }
     }
   }
@@ -2895,84 +2455,130 @@ void ExecutorState::CleanupFramesIterations(FrameState* frame, int64 iter,
   }
 }
 
-void ExecutorState::FrameState::ActivateNodes(const NodeItem* item,
-                                              const bool is_dead, int64 iter,
-                                              EntryVector* outputs,
-                                              TaggedNodeSeq* ready) {
+void ExecutorState::FrameState::ActivateNodesFastPath(const NodeItem* item,
+                                                      const bool is_dead,
+                                                      int64 iter,
+                                                      EntryVector* outputs,
+                                                      TaggedNodeSeq* ready) {
+  // If we know that none of the item's edge destinations require special
+  // handling (i.e. none of the nodes is a merge or control trigger node), we
+  // can take a fast path that avoids accessing the destination NodeItem.
   const GraphView& gview = executor->gview_;
   IterationState* iter_state = GetIteration(iter);
-  const size_t num_output_edges = item->num_output_edges;
-  const EdgeInfo* edges = item->output_edge_list();
+
+  auto maybe_add_to_ready = [&](int dst_id,
+                                PendingCounts::AdjustResult adjust_result) {
+    // Add dst to the ready queue if it's ready
+    if (!adjust_result.any_pending) {
+      const NodeItem* dst_item = gview.node(dst_id);
+      ready->emplace_back(dst_item, this, iter, adjust_result.any_dead);
+      iter_state->outstanding_ops++;
+    }
+  };
+
   Entry* input_tensors = iter_state->input_tensors;
-  for (size_t out_index = 0; out_index < num_output_edges; out_index++) {
-    const EdgeInfo& e = edges[out_index];
+
+  for (const EdgeInfo& e : item->output_edges()) {
     const int dst_id = e.dst_id;
-    const NodeItem* dst_item = gview.node(dst_id);
-    const PendingCounts::Handle dst_pending_id = dst_item->pending_id;
+    const PendingCounts::Handle dst_pending_id = executor->pending_ids_[dst_id];
     const int src_slot = e.output_slot;
 
-    // TODO(yuanbyu): We don't need this if we require the subgraph
-    // given to an executor not to contain a sink node.
-    if (dst_item->is_sink) continue;
+    const bool increment_dead =
+        (is_dead || ((*outputs)[src_slot].state == Entry::State::NO_VALUE));
+    const PendingCounts::AdjustResult adjust_result =
+        iter_state->adjust_for_activation(dst_pending_id, increment_dead);
+    const int dst_loc = e.input_slot;
+    if (e.is_last) {
+      input_tensors[dst_loc] = std::move((*outputs)[src_slot]);
+    } else {
+      input_tensors[dst_loc] = (*outputs)[src_slot];
+    }
+    maybe_add_to_ready(dst_id, adjust_result);
+  }
+
+  for (const ControlEdgeInfo& e : item->output_control_edges()) {
+    const int dst_id = e.dst_id;
+    const PendingCounts::Handle dst_pending_id = executor->pending_ids_[dst_id];
+    const PendingCounts::AdjustResult adjust_result =
+        iter_state->adjust_for_activation(dst_pending_id, is_dead);
+    maybe_add_to_ready(dst_id, adjust_result);
+  }
+}
+
+void ExecutorState::FrameState::ActivateNodesSlowPath(const NodeItem* item,
+                                                      const bool is_dead,
+                                                      int64 iter,
+                                                      EntryVector* outputs,
+                                                      TaggedNodeSeq* ready) {
+  // If any of the edge destinations is a merge or a control trigger node,
+  // we need to read each destination NodeItem to determine what action
+  // to take.
+  const GraphView& gview = executor->gview_;
+  IterationState* iter_state = GetIteration(iter);
+
+  auto maybe_add_to_ready = [&](int dst_id, const NodeItem* dst_item,
+                                bool dst_ready, bool dst_dead) {
+    // Add dst to the ready queue if it's ready
+    if (dst_ready) {
+      if (dst_item->is_control_trigger) dst_dead = false;
+      ready->emplace_back(dst_item, this, iter, dst_dead);
+      iter_state->outstanding_ops++;
+    }
+  };
+
+  Entry* input_tensors = iter_state->input_tensors;
+
+  for (const EdgeInfo& e : item->output_edges()) {
+    const int dst_id = e.dst_id;
+    const NodeItem* dst_item = gview.node(dst_id);
+    const PendingCounts::Handle dst_pending_id = executor->pending_ids_[dst_id];
+    const int src_slot = e.output_slot;
 
     bool dst_dead = false;
     bool dst_ready = false;
-    // True iff this input for dst is needed. We only set this input for
-    // dst if this flag is true. This is needed to make the thread safety
-    // analysis happy.
-    const bool is_control_edge = (src_slot == Graph::kControlSlot);
-    bool dst_need_input = !is_control_edge;
+    bool dst_need_input = true;
+
     if (dst_item->is_merge) {
       // A merge node is ready if all control inputs have arrived and either
       // a) a live data input becomes available or b) all data inputs are
       // dead. For Merge, pending's LSB is set iff a live data input has
       // arrived.
-      if (is_control_edge) {
-        iter_state->decrement_pending(dst_pending_id, 2);
+      if ((*outputs)[src_slot].state != Entry::State::NO_VALUE) {
+        // This is a live data input.
         int count = iter_state->pending(dst_pending_id);
-        int dead_cnt = iter_state->dead_count(dst_pending_id);
-        dst_dead = (dead_cnt == dst_item->num_inputs);
-        dst_ready = (count == 0) || ((count == 1) && dst_dead);
+        iter_state->mark_live(dst_pending_id);
+        // Only the first live edge sets the input and (potentially)
+        // triggers execution. The low bit of count is set if and
+        // only if no live input has been used yet (mark_live clears
+        // it). The node should be started if and only if this is
+        // the first live input and there are no pending control
+        // edges, i.e. count == 1.
+        dst_ready = (count == 1);
+        dst_need_input = ((count & 0x1) == 1);
       } else {
-        if ((*outputs)[src_slot].state != Entry::State::NO_VALUE) {
-          // This is a live data input.
-          int count = iter_state->pending(dst_pending_id);
-          iter_state->mark_live(dst_pending_id);
-          // Only the first live edge sets the input and (potentially)
-          // triggers execution. The low bit of count is set if and
-          // only if no live input has been used yet (mark_live clears
-          // it). The node should be started if and only if this is
-          // the first live input and there are no pending control
-          // edges, i.e. count == 1.
-          dst_ready = (count == 1);
-          dst_need_input = ((count & 0x1) == 1);
-        } else {
-          // This is a dead data input. Note that dst_node is dead if node is
-          // a dead enter. We need this to handle properly a while loop on
-          // the untaken branch of a conditional.
-          // TODO(yuanbyu): This is a bit hacky, but a good solution for
-          // now.
-          iter_state->increment_dead_count(dst_pending_id);
-          const int dead_cnt = iter_state->dead_count(dst_pending_id);
-          dst_dead = (dead_cnt == dst_item->num_inputs) || item->is_enter;
-          dst_ready = (iter_state->pending(dst_pending_id) == 1) && dst_dead;
-          dst_need_input = false;
-        }
+        // This is a dead data input. Note that dst_node is dead if node is
+        // a dead enter. We need this to handle properly a while loop on
+        // the untaken branch of a conditional.
+        // TODO(yuanbyu): This is a bit hacky, but a good solution for
+        // now.
+        iter_state->increment_dead_count(dst_pending_id);
+        const int dead_cnt = iter_state->dead_count(dst_pending_id);
+        dst_dead = (dead_cnt == dst_item->num_inputs) || item->is_enter;
+        dst_ready = (iter_state->pending(dst_pending_id) == 1) && dst_dead;
+        dst_need_input = false;
       }
     } else {
+      // Handle all other (non-merge) nodes.
       const bool increment_dead =
-          (is_dead || (!is_control_edge &&
-                       (*outputs)[src_slot].state == Entry::State::NO_VALUE));
-      int pending, dead;
-      iter_state->adjust_for_activation(dst_pending_id, increment_dead,
-                                        &pending, &dead);
-      dst_dead = (dead > 0);
-      dst_ready = (pending == 0);
+          (is_dead || ((*outputs)[src_slot].state == Entry::State::NO_VALUE));
+      const PendingCounts::AdjustResult adjust_result =
+          iter_state->adjust_for_activation(dst_pending_id, increment_dead);
+      dst_dead = adjust_result.any_dead;
+      dst_ready = !adjust_result.any_pending;
     }
 
     if (dst_need_input) {
-      const int dst_slot = e.input_slot;
-      const int dst_loc = dst_item->input_start + dst_slot;
+      const int dst_loc = e.input_slot;
       if (e.is_last) {
         input_tensors[dst_loc] = std::move((*outputs)[src_slot]);
       } else {
@@ -2980,12 +2586,45 @@ void ExecutorState::FrameState::ActivateNodes(const NodeItem* item,
       }
     }
 
-    // Add dst to the ready queue if it's ready
-    if (dst_ready) {
-      if (dst_item->is_control_trigger) dst_dead = false;
-      ready->emplace_back(dst_item, this, iter, dst_dead);
-      iter_state->outstanding_ops++;
+    maybe_add_to_ready(dst_id, dst_item, dst_ready, dst_dead);
+  }
+
+  for (const ControlEdgeInfo& e : item->output_control_edges()) {
+    const int dst_id = e.dst_id;
+    const NodeItem* dst_item = gview.node(dst_id);
+    const PendingCounts::Handle dst_pending_id = executor->pending_ids_[dst_id];
+
+    bool dst_dead;
+    bool dst_ready;
+    if (dst_item->is_merge) {
+      // A merge node is ready if all control inputs have arrived and either
+      // a) a live data input becomes available or b) all data inputs are
+      // dead. For Merge, pending's LSB is set iff a live data input has
+      // arrived.
+      iter_state->decrement_pending(dst_pending_id, 2);
+      int count = iter_state->pending(dst_pending_id);
+      int dead_cnt = iter_state->dead_count(dst_pending_id);
+      dst_dead = (dead_cnt == dst_item->num_inputs);
+      dst_ready = (count == 0) || ((count == 1) && dst_dead);
+    } else {
+      // Handle all other (non-merge) nodes.
+      const PendingCounts::AdjustResult adjust_result =
+          iter_state->adjust_for_activation(dst_pending_id, is_dead);
+      dst_dead = adjust_result.any_dead;
+      dst_ready = !adjust_result.any_pending;
     }
+    maybe_add_to_ready(dst_id, dst_item, dst_ready, dst_dead);
+  }
+}
+
+void ExecutorState::FrameState::ActivateNodes(const NodeItem* item,
+                                              const bool is_dead, int64 iter,
+                                              EntryVector* outputs,
+                                              TaggedNodeSeq* ready) {
+  if (TF_PREDICT_FALSE(item->is_any_consumer_merge_or_control_trigger)) {
+    ActivateNodesSlowPath(item, is_dead, iter, outputs, ready);
+  } else {
+    ActivateNodesFastPath(item, is_dead, iter, outputs, ready);
   }
 }
 
