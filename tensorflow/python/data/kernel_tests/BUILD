@@ -47,6 +47,17 @@ tf_py_test(
 )
 
 tf_py_test(
+    name = "cardinality_test",
+    srcs = ["cardinality_test.py"],
+    deps = [
+        "//tensorflow/python/data/experimental/ops:cardinality",
+        "//tensorflow/python/data/kernel_tests:test_base",
+        "//tensorflow/python/data/ops:dataset_ops",
+        "@absl_py//absl/testing:parameterized",
+    ],
+)
+
+tf_py_test(
     name = "checkpoint_test",
     size = "medium",
     srcs = ["checkpoint_test.py"],
@@ -80,6 +91,24 @@ tf_py_test(
 )
 
 tf_py_test(
+    name = "data_service_ops_test",
+    size = "medium",
+    srcs = ["data_service_ops_test.py"],
+    deps = [
+        "//tensorflow:tensorflow_py",
+        "//tensorflow/python:client_testlib",
+        "//tensorflow/python:errors",
+        "//tensorflow/python:framework",
+        "//tensorflow/python:framework_test_lib",
+        "//tensorflow/python:platform_test",
+        "//tensorflow/python/data",
+        "//tensorflow/python/data/experimental/ops:testing",
+        "//tensorflow/python/data/kernel_tests:test_base",
+        "//tensorflow/python/data/service:server_lib",
+    ],
+)
+
+tf_py_test(
     name = "dataset_test",
     size = "small",
     srcs = ["dataset_test.py"],
@@ -94,6 +123,21 @@ tf_py_test(
         "//tensorflow/python/data/ops:dataset_ops",
         "//tensorflow/python/data/ops:readers",
         "//tensorflow/python/data/util:nest",
+        "//third_party/py/numpy",
+        "@absl_py//absl/testing:parameterized",
+    ],
+)
+
+tf_py_test(
+    name = "dataset_spec_test",
+    size = "small",
+    srcs = ["dataset_spec_test.py"],
+    deps = [
+        ":test_base",
+        "//tensorflow/python:client_testlib",
+        "//tensorflow/python:dtypes",
+        "//tensorflow/python:errors",
+        "//tensorflow/python/data/ops:dataset_ops",
         "//third_party/py/numpy",
         "@absl_py//absl/testing:parameterized",
     ],

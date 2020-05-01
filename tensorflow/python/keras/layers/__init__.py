@@ -70,6 +70,7 @@ from tensorflow.python.keras.layers.advanced_activations import Softmax
 from tensorflow.python.keras.layers.convolutional import Conv1D
 from tensorflow.python.keras.layers.convolutional import Conv2D
 from tensorflow.python.keras.layers.convolutional import Conv3D
+from tensorflow.python.keras.layers.convolutional import Conv1DTranspose
 from tensorflow.python.keras.layers.convolutional import Conv2DTranspose
 from tensorflow.python.keras.layers.convolutional import Conv3DTranspose
 from tensorflow.python.keras.layers.convolutional import SeparableConv1D
@@ -117,6 +118,9 @@ from tensorflow.python.keras.layers.dense_attention import Attention
 
 # Embedding layers.
 from tensorflow.python.keras.layers.embeddings import Embedding
+
+# Einsum-based dense layer/
+from tensorflow.python.keras.layers.einsum_dense import EinsumDense
 
 # Locally-connected layers.
 from tensorflow.python.keras.layers.local import LocallyConnected1D
